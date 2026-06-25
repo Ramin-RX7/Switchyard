@@ -1,0 +1,12 @@
+{
+  "listen": ":8091",
+  "backends": [
+    "http://127.0.0.1:9001",
+    "http://127.0.0.1:9002"
+  ],
+  "logging": {
+    "outputs": ["console"],
+    "file": "switchyard.log",
+    "format": "{receive_time} {method} {url} status={status} app_status={app_status} dur={request_duration} app_dur={app_duration} ua={req_header.User-Agent}"
+  }
+}

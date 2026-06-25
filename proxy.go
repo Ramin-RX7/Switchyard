@@ -25,7 +25,8 @@ type backend struct {
 // Proxy forwards incoming requests to configured backends.
 type Proxy struct {
 	backends []*backend
-	logger   *Logger // nil when no custom logging is configured
+	logger   *Logger       // nil when no custom logging is configured
+	headers  *headerSetter // nil when no set_headers are configured
 	next     atomic.Uint64
 }
 
@@ -41,7 +42,16 @@ func newProxy(cfg Config) (*Proxy, error) {
 		logger = l
 	}
 
-	p := &Proxy{logger: logger}
+	var headers *headerSetter
+	if len(cfg.SetHeaders) > 0 {
+		hs, err := newHeaderSetter(cfg.SetHeaders)
+		if err != nil {
+			return nil, err
+		}
+		headers = hs
+	}
+
+	p := &Proxy{logger: logger, headers: headers}
 	seenURL := make(map[string]bool)
 	seenID := make(map[string]bool)
 	for _, bc := range cfg.Backends {
@@ -121,6 +131,7 @@ func (p *Proxy) handleRequest(w http.ResponseWriter, r *http.Request, req Reques
 			http.Error(w, "switchyard: no backend available", http.StatusBadGateway)
 			return
 		}
+		p.applyHeaders(req, r)
 		d.Backend.proxy.ServeHTTP(w, r)
 		return
 	}
@@ -137,6 +148,7 @@ func (p *Proxy) handleRequest(w http.ResponseWriter, r *http.Request, req Reques
 	if d.Backend == nil {
 		http.Error(sw, "switchyard: no backend available", http.StatusBadGateway)
 	} else {
+		p.applyHeaders(req, r)
 		r = r.WithContext(context.WithValue(r.Context(), recordKey, rec))
 		d.Backend.proxy.ServeHTTP(sw, r)
 	}
@@ -148,6 +160,13 @@ func (p *Proxy) handleRequest(w http.ResponseWriter, r *http.Request, req Reques
 		rec.responseBody = sw.body.Bytes()
 	}
 	p.logger.log(rec)
+}
+
+// applyHeaders sets the configured set_headers on the outgoing request, if any.
+func (p *Proxy) applyHeaders(req Request, r *http.Request) {
+	if p.headers != nil {
+		p.headers.apply(req, r)
+	}
 }
 
 // captureBody reads the request body into rec and restores it so the backend

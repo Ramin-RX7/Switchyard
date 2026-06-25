@@ -13,7 +13,9 @@ type Request struct {
 	Method     string
 	Path       string // relative route, e.g. /v1/users
 	Host       string
+	Scheme     string // http or https
 	URL        string // complete request URL, e.g. http://host/v1/users?id=1
+	RawQuery   string
 	RemoteAddr string
 	Query      url.Values
 	Header     http.Header
@@ -21,6 +23,8 @@ type Request struct {
 }
 
 // captureRequest builds the internal representation from an incoming request.
+// Header is cloned so the snapshot stays stable even when set_headers later
+// modifies the headers forwarded to the backend.
 func captureRequest(r *http.Request) Request {
 	scheme := "http"
 	if r.TLS != nil {
@@ -30,10 +34,12 @@ func captureRequest(r *http.Request) Request {
 		Method:     r.Method,
 		Path:       r.URL.Path,
 		Host:       r.Host,
+		Scheme:     scheme,
 		URL:        scheme + "://" + r.Host + r.URL.RequestURI(),
+		RawQuery:   r.URL.RawQuery,
 		RemoteAddr: r.RemoteAddr,
 		Query:      r.URL.Query(),
-		Header:     r.Header,
+		Header:     r.Header.Clone(),
 		ReceivedAt: time.Now(),
 	}
 }

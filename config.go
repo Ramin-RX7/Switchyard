@@ -13,6 +13,10 @@ type Config struct {
 	// Logging is optional. When nil, Switchyard uses its built-in operational
 	// log line; when set, each request is logged using the user-defined format.
 	Logging *LogConfig `json:"logging"`
+	// SetHeaders maps header names to value templates applied to requests
+	// forwarded to backends, like nginx's proxy_set_header. Values may contain
+	// $variables (see vars.go), e.g. {"X-Real-IP": "$remote_addr"}.
+	SetHeaders map[string]string `json:"set_headers"`
 }
 
 // BackendConfig describes one configured upstream. URL is required; ID is

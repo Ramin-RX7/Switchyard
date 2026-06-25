@@ -137,6 +137,7 @@ type logFormat struct {
 //	req_header.NAME   a single request header
 //	resp_header.NAME  a single response header
 //	query.NAME        a single query parameter
+//	var.NAME          a request variable (see vars.go), e.g. var.remote_addr
 func compileFormat(format string) (*logFormat, error) {
 	f := &logFormat{refs: map[string]bool{}}
 	for i := 0; i < len(format); {
@@ -180,7 +181,7 @@ func validateField(field, param string) error {
 			return fmt.Errorf("field %q does not take a parameter", field)
 		}
 		return nil
-	case "req_header", "resp_header", "query":
+	case "req_header", "resp_header", "query", "var":
 		if param == "" {
 			return fmt.Errorf("field %q requires a parameter, e.g. {%s.NAME}", field, field)
 		}
@@ -255,6 +256,9 @@ func renderField(rec *logRecord, field, param string) string {
 		return valueOrAbsent(rec.respHeader.Get(param))
 	case "query":
 		return valueOrAbsent(rec.req.Query.Get(param))
+	case "var":
+		v, _ := requestVar(rec.req, param)
+		return valueOrAbsent(v)
 	}
 	return absent
 }

@@ -8,11 +8,19 @@ import (
 
 // Config is Switchyard's external configuration, loaded from a JSON file.
 type Config struct {
-	Listen   string   `json:"listen"`
-	Backends []string `json:"backends"`
+	Listen   string          `json:"listen"`
+	Backends []BackendConfig `json:"backends"`
 	// Logging is optional. When nil, Switchyard uses its built-in operational
 	// log line; when set, each request is logged using the user-defined format.
 	Logging *LogConfig `json:"logging"`
+}
+
+// BackendConfig describes one configured upstream. URL is required; ID is
+// optional and defaults to URL. IDs and URLs must each be unique across
+// backends (enforced in newProxy).
+type BackendConfig struct {
+	ID  string `json:"id"`
+	URL string `json:"url"`
 }
 
 // loadConfig reads and parses the configuration file at path.

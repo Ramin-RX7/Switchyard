@@ -70,9 +70,13 @@ func newLogger(cfg LogConfig) (*Logger, error) {
 	return &Logger{format: f, w: io.MultiWriter(ws...)}, nil
 }
 
-// needsBody reports whether the configured format references the request body,
-// so the proxy can avoid buffering bodies that are never logged.
-func (l *Logger) needsBody() bool { return l.format.refs["request_body"] }
+// needsRequestBody reports whether the configured format references the request
+// body, so the proxy can avoid buffering bodies that are never logged.
+func (l *Logger) needsRequestBody() bool { return l.format.refs["request_body"] }
+
+// needsResponseBody reports whether the configured format references the
+// response body, so the proxy only tees responses that are actually logged.
+func (l *Logger) needsResponseBody() bool { return l.format.refs["response_body"] }
 
 // log renders rec and writes a single line to all outputs. The write is
 // serialized so concurrent requests do not interleave within a line.
@@ -87,14 +91,16 @@ func (l *Logger) log(rec *logRecord) {
 // Fields that were never reached (e.g. backend timing for a rejected request)
 // stay at their zero value and render as "-".
 type logRecord struct {
-	req         Request
-	forwardTime time.Time // sent to backend
-	appRespTime time.Time // response received from backend
-	endTime     time.Time // response fully handled
-	requestBody []byte
-	appStatus   int // status returned by the backend, 0 if none
-	status      int // status returned to the client
-	respHeader  http.Header
+	req          Request
+	backend      *backend  // selected upstream, nil when none was chosen
+	forwardTime  time.Time // sent to backend
+	appRespTime  time.Time // response received from backend
+	endTime      time.Time // response fully handled
+	requestBody  []byte
+	responseBody []byte
+	appStatus    int // status returned by the backend, 0 if none
+	status       int // status returned to the client
+	respHeader   http.Header
 }
 
 // --- format compilation -----------------------------------------------------
@@ -118,7 +124,8 @@ type logFormat struct {
 //
 // Available fields:
 //
-//	method, url, path, request_body
+//	method, url, path, request_body, response_body
+//	backend_id        id of the selected backend
 //	status            response status sent to the client
 //	app_status        status returned by the backend
 //	receive_time      request received from the client
@@ -165,7 +172,7 @@ func compileFormat(format string) (*logFormat, error) {
 
 func validateField(field, param string) error {
 	switch field {
-	case "method", "url", "path", "request_body",
+	case "method", "url", "path", "request_body", "response_body", "backend_id",
 		"status", "app_status",
 		"receive_time", "forward_time", "app_response_time", "end_time",
 		"request_duration", "app_duration":
@@ -213,6 +220,16 @@ func renderField(rec *logRecord, field, param string) string {
 			return absent
 		}
 		return string(rec.requestBody)
+	case "response_body":
+		if rec.responseBody == nil {
+			return absent
+		}
+		return string(rec.responseBody)
+	case "backend_id":
+		if rec.backend == nil {
+			return absent
+		}
+		return rec.backend.id
 	case "status":
 		return statusString(rec.status)
 	case "app_status":

@@ -17,6 +17,7 @@ import (
 
 // backend is a configured upstream that Switchyard can forward requests to.
 type backend struct {
+	id    string
 	url   string
 	proxy *httputil.ReverseProxy
 }
@@ -41,7 +42,13 @@ func newProxy(cfg Config) (*Proxy, error) {
 	}
 
 	p := &Proxy{logger: logger}
-	for _, raw := range cfg.Backends {
+	seenURL := make(map[string]bool)
+	seenID := make(map[string]bool)
+	for _, bc := range cfg.Backends {
+		raw := bc.URL
+		if raw == "" {
+			return nil, fmt.Errorf("backend must include a url")
+		}
 		target, err := url.Parse(raw)
 		if err != nil {
 			return nil, fmt.Errorf("parse backend %q: %w", raw, err)
@@ -49,8 +56,23 @@ func newProxy(cfg Config) (*Proxy, error) {
 		if target.Scheme == "" || target.Host == "" {
 			return nil, fmt.Errorf("backend %q must include scheme and host", raw)
 		}
+		if seenURL[raw] {
+			return nil, fmt.Errorf("duplicate backend url %q", raw)
+		}
+		seenURL[raw] = true
+
+		// An unspecified id defaults to the backend's url.
+		id := bc.ID
+		if id == "" {
+			id = raw
+		}
+		if seenID[id] {
+			return nil, fmt.Errorf("duplicate backend id %q", id)
+		}
+		seenID[id] = true
 
 		b := &backend{
+			id:    id,
 			url:   raw,
 			proxy: httputil.NewSingleHostReverseProxy(target),
 		}
@@ -103,12 +125,15 @@ func (p *Proxy) handleRequest(w http.ResponseWriter, r *http.Request, req Reques
 		return
 	}
 
-	rec := &logRecord{req: req}
-	if p.logger.needsBody() {
+	rec := &logRecord{req: req, backend: d.Backend}
+	if p.logger.needsRequestBody() {
 		captureBody(r, rec)
 	}
 
 	sw := &statusWriter{ResponseWriter: w}
+	if p.logger.needsResponseBody() {
+		sw.body = &bytes.Buffer{}
+	}
 	if d.Backend == nil {
 		http.Error(sw, "switchyard: no backend available", http.StatusBadGateway)
 	} else {
@@ -119,6 +144,9 @@ func (p *Proxy) handleRequest(w http.ResponseWriter, r *http.Request, req Reques
 	rec.endTime = time.Now()
 	rec.status = sw.status
 	rec.respHeader = sw.Header()
+	if sw.body != nil {
+		rec.responseBody = sw.body.Bytes()
+	}
 	p.logger.log(rec)
 }
 
@@ -171,6 +199,7 @@ type statusWriter struct {
 	http.ResponseWriter
 	status int
 	wrote  bool
+	body   *bytes.Buffer // non-nil when the response body should be captured
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -185,6 +214,9 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	if !w.wrote {
 		w.status = http.StatusOK
 		w.wrote = true
+	}
+	if w.body != nil {
+		w.body.Write(b)
 	}
 	return w.ResponseWriter.Write(b)
 }

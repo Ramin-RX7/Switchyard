@@ -40,7 +40,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("switchyard: listening on %s, %d backend(s)", listen, len(p.backends))
+	log.Printf("switchyard: listening on %s, %d backend(s), %d location(s)", listen, len(p.backends), len(p.locations))
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("switchyard: server stopped: %v", err)
 	}

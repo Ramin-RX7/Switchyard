@@ -1,18 +1,58 @@
 {
-  "listen": ":8091",
-  "backends": [
-    { "url": "http://127.0.0.1:9001" },
-    { "id": "secondary", "url": "http://127.0.0.1:9002" }
-  ],
-  "set_headers": {
-    "X-Real-IP": "$remote_addr",
-    "X-Forwarded-Proto": "$scheme",
-    "X-Forwarded-Host": "$host",
-    "X-Origin-URL": "$http_origin"
-  },
-  "logging": {
-    "outputs": ["console", "file"],
-    "file": "switchyard.log",
-    "format": "{receive_time} {method} {url} backend={backend_id} ip={var.remote_addr} origin={var.http_origin} status={status} dur={request_duration}"
-  }
+    "listen": ":8091",
+    "backends": [
+        {
+            "id": "api1",
+            "url": "http://127.0.0.1:9001"
+        },
+        {
+            "id": "api2",
+            "url": "http://127.0.0.1:9002"
+        },
+        {
+            "id": "frontend",
+            "url": "http://127.0.0.1:9003"
+        }
+    ],
+    "set_headers": {
+        "X-Real-IP": "$remote_addr",
+        "X-Forwarded-Proto": "$scheme",
+        "X-Forwarded-Host": "$host"
+    },
+    "logging": {
+        "outputs": [
+            "console"
+        ],
+        "format": "{receive_time} {method} {path} backend={backend_id} status={status} dur={request_duration}"
+    },
+    "locations": [
+        {
+            "path": "/api/",
+            "backends": [
+                "api1",
+                "api2"
+            ],
+            "set_headers": {
+                "X-Route": "api"
+            },
+            "logging": {
+                "outputs": [
+                    "file"
+                ],
+                "file": "api.log",
+                "format": "API {method} {path} backend={backend_id} status={status} app_dur={app_duration}"
+            }
+        },
+        {
+            "path": "/media/",
+            "type": "static",
+            "root": "/tmp/media"
+        },
+        {
+            "path": "/",
+            "backends": [
+                "frontend"
+            ]
+        }
+    ]
 }

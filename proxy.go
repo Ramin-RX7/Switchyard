@@ -1,27 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"fmt"
-	"io"
 	"log"
-	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
 )
-
-// backend is a configured upstream that Switchyard can forward requests to.
-type backend struct {
-	id    string
-	url   string
-	proxy *httputil.ReverseProxy
-}
 
 // Proxy forwards incoming requests to configured backends.
 type Proxy struct {
@@ -64,55 +51,12 @@ func newProxy(cfg Config) (*Proxy, error) {
 		}
 	}
 
-	p := &Proxy{logger: logger, headers: headers}
-	seenURL := make(map[string]bool)
-	seenID := make(map[string]bool)
-	for _, bc := range cfg.Backends {
-		raw := bc.URL
-		if raw == "" {
-			return nil, fmt.Errorf("backend must include a url")
-		}
-		target, err := url.Parse(raw)
-		if err != nil {
-			return nil, fmt.Errorf("parse backend %q: %w", raw, err)
-		}
-		if target.Scheme == "" || target.Host == "" {
-			return nil, fmt.Errorf("backend %q must include scheme and host", raw)
-		}
-		if seenURL[raw] {
-			return nil, fmt.Errorf("duplicate backend url %q", raw)
-		}
-		seenURL[raw] = true
-
-		// An unspecified id defaults to the backend's url.
-		id := bc.ID
-		if id == "" {
-			id = raw
-		}
-		if seenID[id] {
-			return nil, fmt.Errorf("duplicate backend id %q", id)
-		}
-		seenID[id] = true
-
-		b := &backend{
-			id:    id,
-			url:   raw,
-			proxy: httputil.NewSingleHostReverseProxy(target),
-		}
-		// When any logging is enabled, wrap the transport so the backend
-		// round-trip timing and status code can be recorded per request.
-		if anyLogging {
-			b.proxy.Transport = &loggingTransport{base: http.DefaultTransport}
-		}
-		// Handle backend failures (unreachable host, reset connection, etc.)
-		// explicitly: log them in Switchyard's format and return a consistent
-		// 502 instead of relying on the default handler.
-		b.proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("switchyard: backend %s failed: %v", b.url, err)
-			http.Error(w, "switchyard: backend unavailable", http.StatusBadGateway)
-		}
-		p.backends = append(p.backends, b)
+	backends, err := buildBackends(cfg.Backends, anyLogging)
+	if err != nil {
+		return nil, err
 	}
+
+	p := &Proxy{logger: logger, headers: headers, backends: backends}
 
 	if len(cfg.Locations) > 0 {
 		byID := make(map[string]*backend, len(p.backends))
@@ -148,25 +92,25 @@ func (p *Proxy) decide(req Request) Decision {
 			if !loc.matches(req.Path) {
 				continue
 			}
-			if loc.kind == "static" {
-				return Decision{Action: "static", Reason: "location " + loc.raw, Location: loc}
+			if loc.kind == kindStatic {
+				return Decision{Action: ActionStatic, Reason: "location " + loc.raw, Location: loc}
 			}
 			b := loc.selectBackend()
 			if b == nil {
-				return Decision{Action: "reject", Reason: "location " + loc.raw + ": empty pool",
+				return Decision{Action: ActionReject, Reason: "location " + loc.raw + ": empty pool",
 					Location: loc, Status: http.StatusBadGateway}
 			}
-			return Decision{Action: "forward", Reason: "round-robin", Backend: b, Location: loc}
+			return Decision{Action: ActionForward, Reason: "round-robin", Backend: b, Location: loc}
 		}
-		return Decision{Action: "reject", Reason: "no matching location", Status: http.StatusNotFound}
+		return Decision{Action: ActionReject, Reason: "no matching location", Status: http.StatusNotFound}
 	}
 
 	if len(p.backends) == 0 {
-		return Decision{Action: "reject", Reason: "no backends configured"}
+		return Decision{Action: ActionReject, Reason: "no backends configured"}
 	}
 	i := p.next.Add(1) - 1
 	b := p.backends[int(i%uint64(len(p.backends)))]
-	return Decision{Action: "forward", Reason: "round-robin", Backend: b}
+	return Decision{Action: ActionForward, Reason: "round-robin", Backend: b}
 }
 
 // handleRequest acts on the decision. It is the only stage with side effects.
@@ -220,35 +164,17 @@ func (p *Proxy) loggersFor(d Decision) []*Logger {
 	return ls
 }
 
-func anyNeedsRequestBody(ls []*Logger) bool {
-	for _, l := range ls {
-		if l.needsRequestBody() {
-			return true
-		}
-	}
-	return false
-}
-
-func anyNeedsResponseBody(ls []*Logger) bool {
-	for _, l := range ls {
-		if l.needsResponseBody() {
-			return true
-		}
-	}
-	return false
-}
-
 // act performs the side effect selected by the decision, applying any stacked
 // headers before forwarding or serving.
 func (p *Proxy) act(w http.ResponseWriter, r *http.Request, req Request, d Decision) {
 	switch d.Action {
-	case "forward":
+	case ActionForward:
 		p.applyStackedHeaders(req, r, d.Location)
 		d.Backend.proxy.ServeHTTP(w, r)
-	case "static":
+	case ActionStatic:
 		p.applyStackedHeaders(req, r, d.Location)
 		p.serveStatic(w, r, req, d.Location)
-	default: // "reject"
+	default: // ActionReject
 		status := d.Status
 		if status == 0 {
 			status = http.StatusBadGateway
@@ -283,88 +209,4 @@ func (p *Proxy) applyStackedHeaders(req Request, r *http.Request, loc *location)
 	if loc != nil && loc.headers != nil {
 		loc.headers.apply(req, r)
 	}
-}
-
-// captureBody reads the request body into rec and restores it so the backend
-// still receives the full body. Used only when the log format references it.
-func captureBody(r *http.Request, rec *logRecord) {
-	if r.Body == nil {
-		return
-	}
-	data, err := io.ReadAll(r.Body)
-	r.Body.Close()
-	if err != nil {
-		return
-	}
-	rec.requestBody = data
-	r.Body = io.NopCloser(bytes.NewReader(data))
-}
-
-// contextKey is a private type for context values to avoid collisions.
-type contextKey int
-
-const recordKey contextKey = iota
-
-// loggingTransport records when a request is sent to the backend, when the
-// response returns, and the backend's status code, into the logRecord carried
-// on the request context.
-type loggingTransport struct {
-	base http.RoundTripper
-}
-
-func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	rec, _ := r.Context().Value(recordKey).(*logRecord)
-	if rec != nil {
-		rec.forwardTime = time.Now()
-	}
-	resp, err := t.base.RoundTrip(r)
-	if rec != nil {
-		rec.appRespTime = time.Now()
-		if resp != nil {
-			rec.appStatus = resp.StatusCode
-		}
-	}
-	return resp, err
-}
-
-// statusWriter wraps an http.ResponseWriter to capture the status code sent to
-// the client. It forwards Flush and Hijack so streaming and connection upgrades
-// (e.g. WebSockets) through the reverse proxy keep working.
-type statusWriter struct {
-	http.ResponseWriter
-	status int
-	wrote  bool
-	body   *bytes.Buffer // non-nil when the response body should be captured
-}
-
-func (w *statusWriter) WriteHeader(code int) {
-	if !w.wrote {
-		w.status = code
-		w.wrote = true
-	}
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *statusWriter) Write(b []byte) (int, error) {
-	if !w.wrote {
-		w.status = http.StatusOK
-		w.wrote = true
-	}
-	if w.body != nil {
-		w.body.Write(b)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-func (w *statusWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
-		return h.Hijack()
-	}
-	return nil, nil, fmt.Errorf("switchyard: response writer does not support hijacking")
 }

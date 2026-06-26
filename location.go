@@ -9,6 +9,15 @@ import (
 	"sync/atomic"
 )
 
+// locationKind selects a location's behavior: forward to a backend pool
+// ("proxy") or serve files from a directory ("static").
+type locationKind string
+
+const (
+	kindProxy  locationKind = "proxy"
+	kindStatic locationKind = "static"
+)
+
 // location is one compiled entry in the ordered locations list. Matching is
 // first-match-wins in slice order. A "proxy" location selects from its own pool
 // of backends (round-robin via its own counter); a "static" location serves
@@ -23,7 +32,7 @@ type location struct {
 	re     *regexp.Regexp // used when set (regex: true)
 	raw    string         // original path, for messages
 
-	kind string // "proxy" or "static"
+	kind locationKind // kindProxy or kindStatic
 
 	// proxy
 	backends []*backend    // shared pointers from the global registry
@@ -80,12 +89,12 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*backend) ([]*locat
 			loc.prefix = c.Path
 		}
 
-		kind := c.Type
+		kind := locationKind(c.Type)
 		if kind == "" {
-			kind = "proxy"
+			kind = kindProxy
 		}
 		switch kind {
-		case "proxy":
+		case kindProxy:
 			if c.Root != "" || c.StripPrefix != nil {
 				return nil, fmt.Errorf("location %q: root/strip_prefix are only valid for type \"static\"", c.Path)
 			}
@@ -99,7 +108,7 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*backend) ([]*locat
 				}
 				loc.backends = append(loc.backends, b)
 			}
-		case "static":
+		case kindStatic:
 			if len(c.Backends) > 0 {
 				return nil, fmt.Errorf("location %q: backends are only valid for type \"proxy\"", c.Path)
 			}

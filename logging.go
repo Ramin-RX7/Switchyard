@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -289,4 +292,112 @@ func valueOrAbsent(s string) string {
 		return absent
 	}
 	return s
+}
+
+// --- request/response capture plumbing --------------------------------------
+
+// anyNeedsRequestBody reports whether any of the loggers reference the request
+// body, so the proxy can skip buffering it when none do.
+func anyNeedsRequestBody(ls []*Logger) bool {
+	for _, l := range ls {
+		if l.needsRequestBody() {
+			return true
+		}
+	}
+	return false
+}
+
+// anyNeedsResponseBody reports whether any of the loggers reference the response
+// body, so the proxy only tees responses that are actually logged.
+func anyNeedsResponseBody(ls []*Logger) bool {
+	for _, l := range ls {
+		if l.needsResponseBody() {
+			return true
+		}
+	}
+	return false
+}
+
+// captureBody reads the request body into rec and restores it so the backend
+// still receives the full body. Used only when the log format references it.
+func captureBody(r *http.Request, rec *logRecord) {
+	if r.Body == nil {
+		return
+	}
+	data, err := io.ReadAll(r.Body)
+	r.Body.Close()
+	if err != nil {
+		return
+	}
+	rec.requestBody = data
+	r.Body = io.NopCloser(bytes.NewReader(data))
+}
+
+// contextKey is a private type for context values to avoid collisions.
+type contextKey int
+
+const recordKey contextKey = iota
+
+// loggingTransport records when a request is sent to the backend, when the
+// response returns, and the backend's status code, into the logRecord carried
+// on the request context.
+type loggingTransport struct {
+	base http.RoundTripper
+}
+
+func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rec, _ := r.Context().Value(recordKey).(*logRecord)
+	if rec != nil {
+		rec.forwardTime = time.Now()
+	}
+	resp, err := t.base.RoundTrip(r)
+	if rec != nil {
+		rec.appRespTime = time.Now()
+		if resp != nil {
+			rec.appStatus = resp.StatusCode
+		}
+	}
+	return resp, err
+}
+
+// statusWriter wraps an http.ResponseWriter to capture the status code sent to
+// the client. It forwards Flush and Hijack so streaming and connection upgrades
+// (e.g. WebSockets) through the reverse proxy keep working.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+	body   *bytes.Buffer // non-nil when the response body should be captured
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if !w.wrote {
+		w.status = code
+		w.wrote = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if !w.wrote {
+		w.status = http.StatusOK
+		w.wrote = true
+	}
+	if w.body != nil {
+		w.body.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("switchyard: response writer does not support hijacking")
 }

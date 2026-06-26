@@ -2,11 +2,21 @@ package main
 
 import "fmt"
 
+// Action is what handling should do with a request. It is recorded by decide
+// and acted on by act.
+type Action string
+
+const (
+	ActionForward Action = "forward"
+	ActionStatic  Action = "static"
+	ActionReject  Action = "reject"
+)
+
 // Decision is the passive result of interpreting a request. It records how
 // Switchyard understood the request, including the backend selected for it,
 // but does not itself cause any forwarding to occur.
 type Decision struct {
-	Action  string
+	Action  Action
 	Reason  string
 	Backend *backend // selected upstream, nil when none was chosen
 	// Location is the matched location block, nil for global round-robin or

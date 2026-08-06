@@ -1,84 +1,76 @@
-package main
+package switchyard
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
-	"sync/atomic"
 )
 
-// locationKind selects a location's behavior: forward to a backend pool
+// LocationKind selects a location's behavior: forward to a backend pool
 // ("proxy") or serve files from a directory ("static").
-type locationKind string
+type LocationKind string
 
 const (
-	kindProxy  locationKind = "proxy"
-	kindStatic locationKind = "static"
+	KindProxy  LocationKind = "proxy"
+	KindStatic LocationKind = "static"
 )
 
-// location is one compiled entry in the ordered locations list. Matching is
+// Location is one compiled entry in the ordered locations list. Matching is
 // first-match-wins in slice order. A "proxy" location selects from its own pool
-// of backends (round-robin via its own counter); a "static" location serves
-// files from a directory. Logging and headers, when set, stack on top of the
-// global ones.
+// of backends via its own Selector; a "static" location serves files from a
+// directory. Logging and headers, when set, stack on top of the global ones.
 //
-// A location must not be copied after construction: it holds an atomic counter.
-// Always pass it around as *location.
-type location struct {
+// The exported fields (Kind, Pool, Selector, Static, Logger, Headers) are
+// overridable by SDK users after New — e.g. assign a custom Selector to change
+// this location's load balancing without touching the rest of its configuration.
+//
+// A Location must not be copied after construction: its Selector may hold an
+// atomic counter. Always pass it around as *Location.
+type Location struct {
 	// matching
 	prefix string         // used when re == nil
 	re     *regexp.Regexp // used when set (regex: true)
 	raw    string         // original path, for messages
 
-	kind locationKind // kindProxy or kindStatic
+	Kind LocationKind // KindProxy or KindStatic
 
 	// proxy
-	backends []*backend    // shared pointers from the global registry
-	next     atomic.Uint64 // this location's own round-robin counter
+	Pool     BackendPool     // this location's backend pool
+	Selector BackendSelector // this location's backend-selection strategy
 
 	// static
-	root        string
-	stripPrefix string
-	fileServer  http.Handler // built once at compile time
+	Static StaticServer // serves files; nil unless Kind == KindStatic
 
 	// stacking features (nil = none for this location)
-	logger  *Logger
-	headers *headerSetter
+	Logger  Logger
+	Headers HeaderApplier
 }
 
-// matches reports whether path is handled by this location.
-func (l *location) matches(path string) bool {
+// Path returns the location's configured path (the prefix or regex source), for
+// SDK users identifying a specific location to customize after New.
+func (l *Location) Path() string { return l.raw }
+
+// Matches reports whether path is handled by this location. It is exported so a
+// custom Decider can reuse the built-in matching rule.
+func (l *Location) Matches(path string) bool {
 	if l.re != nil {
 		return l.re.MatchString(path)
 	}
 	return strings.HasPrefix(path, l.prefix)
 }
 
-// selectBackend picks the next backend from the pool using round-robin. It is
-// passive: an atomic increment, no I/O. Returns nil when the pool is empty (the
-// caller turns this into a reject), though compileLocations rejects empty pools
-// at startup so this should be unreachable.
-func (l *location) selectBackend() *backend {
-	if len(l.backends) == 0 {
-		return nil
-	}
-	i := l.next.Add(1) - 1
-	return l.backends[int(i%uint64(len(l.backends)))]
-}
-
 // compileLocations validates and compiles the configured locations against the
 // backend registry. It fails fast on any misconfiguration so problems surface
 // at startup rather than per request.
-func compileLocations(cfgs []LocationConfig, byID map[string]*backend) ([]*location, error) {
-	locs := make([]*location, 0, len(cfgs))
+func compileLocations(cfgs []LocationConfig, byID map[string]*Backend) ([]*Location, error) {
+	locs := make([]*Location, 0, len(cfgs))
 	for _, c := range cfgs {
 		if c.Path == "" {
 			return nil, fmt.Errorf("location: path must not be empty")
 		}
 
-		loc := &location{raw: c.Path}
+		loc := &Location{raw: c.Path}
 		if c.Regex {
 			re, err := regexp.Compile(c.Path)
 			if err != nil {
@@ -89,26 +81,31 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*backend) ([]*locat
 			loc.prefix = c.Path
 		}
 
-		kind := locationKind(c.Type)
+		kind := LocationKind(c.Type)
 		if kind == "" {
-			kind = kindProxy
+			kind = KindProxy
 		}
 		switch kind {
-		case kindProxy:
+		case KindProxy:
 			if c.Root != "" || c.StripPrefix != nil {
 				return nil, fmt.Errorf("location %q: root/strip_prefix are only valid for type \"static\"", c.Path)
 			}
 			if len(c.Backends) == 0 {
 				return nil, fmt.Errorf("location %q: proxy location requires at least one backend", c.Path)
 			}
+			var pool []*Backend
 			for _, id := range c.Backends {
 				b, ok := byID[id]
 				if !ok {
 					return nil, fmt.Errorf("location %q: unknown backend id %q", c.Path, id)
 				}
-				loc.backends = append(loc.backends, b)
+				pool = append(pool, b)
 			}
-		case kindStatic:
+			loc.Pool = NewStaticPool(pool)
+			// Each location gets its own selector so locations sharing a backend
+			// rotate independently. Users may replace this after New.
+			loc.Selector = &RoundRobinSelector{}
+		case KindStatic:
 			if len(c.Backends) > 0 {
 				return nil, fmt.Errorf("location %q: backends are only valid for type \"proxy\"", c.Path)
 			}
@@ -122,32 +119,32 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*backend) ([]*locat
 			if !info.IsDir() {
 				return nil, fmt.Errorf("location %q: root %q is not a directory", c.Path, c.Root)
 			}
-			loc.root = c.Root
-			loc.fileServer = http.FileServer(http.Dir(c.Root))
+			var stripPrefix string
 			switch {
 			case c.StripPrefix != nil:
-				loc.stripPrefix = *c.StripPrefix
+				stripPrefix = *c.StripPrefix
 			case loc.re == nil:
-				loc.stripPrefix = c.Path
+				stripPrefix = c.Path
 			}
+			loc.Static = newFileServer(c.Root, stripPrefix)
 		default:
 			return nil, fmt.Errorf("location %q: unknown type %q (want \"proxy\" or \"static\")", c.Path, kind)
 		}
-		loc.kind = kind
+		loc.Kind = kind
 
 		if c.Logging != nil {
 			l, err := newLogger(*c.Logging)
 			if err != nil {
 				return nil, fmt.Errorf("location %q: %w", c.Path, err)
 			}
-			loc.logger = l
+			loc.Logger = l
 		}
 		if len(c.SetHeaders) > 0 {
 			hs, err := newHeaderSetter(c.SetHeaders)
 			if err != nil {
 				return nil, fmt.Errorf("location %q: %w", c.Path, err)
 			}
-			loc.headers = hs
+			loc.Headers = hs
 		}
 
 		locs = append(locs, loc)

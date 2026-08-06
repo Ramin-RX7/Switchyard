@@ -1,8 +1,8 @@
-package main
+package switchyard
 
 import "fmt"
 
-// Action is what handling should do with a request. It is recorded by decide
+// Action is what handling should do with a request. It is recorded by a Decider
 // and acted on by act.
 type Action string
 
@@ -18,11 +18,11 @@ const (
 type Decision struct {
 	Action  Action
 	Reason  string
-	Backend *backend // selected upstream, nil when none was chosen
+	Backend *Backend // selected upstream, nil when none was chosen
 	// Location is the matched location block, nil for global round-robin or
 	// when no location matched. It carries that location's static root,
 	// stacked logger and headers, read during handling.
-	Location *location
+	Location *Location
 	// Status is the HTTP status for an Action of "reject": 404 when no location
 	// matched, 502 otherwise. Zero means "default to 502".
 	Status int
@@ -31,7 +31,7 @@ type Decision struct {
 func (d Decision) String() string {
 	switch {
 	case d.Backend != nil:
-		return fmt.Sprintf("%s -> %s (%s)", d.Action, d.Backend.url, d.Reason)
+		return fmt.Sprintf("%s -> %s (%s)", d.Action, d.Backend.URL, d.Reason)
 	case d.Location != nil:
 		return fmt.Sprintf("%s -> %s (%s)", d.Action, d.Location.raw, d.Reason)
 	default:

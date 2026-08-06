@@ -10,7 +10,8 @@ go run ./cmd/switchyard/ -config switchyard.json # run directly (defaults to ./s
 go test ./...                                    # run all tests (no tests exist yet)
 go test -run TestName ./...                      # run a single test
 go vet ./...                                     # static checks
-gofmt -l ./cmd/switchyard/                       # list files needing formatting
+gofmt -l .                                       # list files needing formatting (library is at repo root)
+go build ./examples/custom-selector/             # build an SDK example
 ```
 
 The server listens on the address in the config's `listen` field, falling back to `:8091`.
@@ -32,20 +33,25 @@ Full feature documentation is in [`docs/`](docs/):
 
 ## Architecture
 
-Switchyard is a single-package (`package main`) HTTP reverse proxy. The request lifecycle is split into three strictly separate stages — preserve this separation when adding features.
+Switchyard is an importable library (`package switchyard`, import path `github.com/Ramin-RX7/Switchyard/switchyard`) living in the [switchyard/](switchyard/) directory. The `cmd/switchyard` binary is a thin consumer — it's the config-only turnkey mode. Both usage modes (config-only binary; SDK import) run off the same code. Entry points: `LoadConfig` ([switchyard/config.go](switchyard/config.go)), `New` + `Handler`/`ListenAndServe` ([switchyard/proxy.go](switchyard/proxy.go)).
 
-**Request flow** (`Proxy.handle` in [proxy.go](cmd/switchyard/proxy.go)):
+The request lifecycle is split into three strictly separate stages — preserve this separation when adding features.
 
-1. **Capture** — `captureRequest` ([request.go](cmd/switchyard/request.go)) converts the live `*http.Request` into an immutable `Request` snapshot. Headers are cloned. All subsequent logic reads this value.
-2. **Decide** — `Proxy.decide` ([proxy.go](cmd/switchyard/proxy.go)) is a pure function (no I/O, no side effects). Returns a `Decision` ([decision.go](cmd/switchyard/decision.go)) with the chosen action and selected backend. Routing logic lives here and nowhere else.
-3. **Act** — `Proxy.handleRequest` + `Proxy.act` ([proxy.go](cmd/switchyard/proxy.go)) is the only stage that touches the outside world — it forwards, serves files, or rejects.
+**Request flow** (`Proxy.handle` in [switchyard/proxy.go](switchyard/proxy.go)):
 
-See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, file map, and extension pattern.
+1. **Capture** — `captureRequest` ([switchyard/request.go](switchyard/request.go)) converts the live `*http.Request` into an immutable `Request` snapshot. Headers are cloned. All subsequent logic reads this value.
+2. **Decide** — `p.Decider.Decide` (default `DefaultDecider` in [switchyard/decide.go](switchyard/decide.go)) is a pure function (no I/O, no side effects). Returns a `Decision` ([switchyard/decision.go](switchyard/decision.go)) with the chosen action and selected backend. Routing logic lives here and nowhere else.
+3. **Act** — `Proxy.handleRequest` ([switchyard/proxy.go](switchyard/proxy.go)) delegates to `p.Actor.Act` (default `DefaultActor` in [switchyard/actor.go](switchyard/actor.go)) — the only stage that touches the outside world; it forwards, serves files, or rejects.
+
+See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, package layout, and extension pattern.
+
+**Pluggable stages (SDK).** All 8 core stages are interfaces with config-driven defaults, overridable by SDK users via exported fields on `Proxy`/`Location`: `Decider` (`p.Decider`), `Actor` (`p.Actor`), `Router` (`p.Router`), `BackendSelector` (`p.Selector`/`loc.Selector`, default `RoundRobinSelector`), `BackendPool` (`p.Pool`/`loc.Pool`, default `StaticPool`), `HeaderApplier` (`p.Headers`/`loc.Headers`, default `TemplateHeaderSetter`), `StaticServer` (`loc.Static`, default `FileServer`), `Logger` (`p.Logger`/`loc.Logger`, default `FormatLogger`). See [docs/extending.md](docs/extending.md).
 
 **Key design rules:**
-- All routing logic belongs in `decide`. Never perform I/O there.
-- All side effects belong in `act`. Never make routing decisions there.
-- Adding a new action type: constant in `decision.go` → case in `decide` → case in `act`.
+- All routing logic belongs in the `Decider`. Never perform I/O there.
+- All side effects belong in the `Actor`. Never make routing decisions there.
+- Adding a new action type: constant in `decision.go` → case in `DefaultDecider.Decide` → case in `DefaultActor.Act`.
+- Behavior parity: `New(cfg)` must reproduce the turnkey binary's behavior exactly; overrides are additive.
 
 ## Feature Quick-Reference
 

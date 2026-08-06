@@ -1,4 +1,4 @@
-package main
+package switchyard
 
 import (
 	"fmt"
@@ -180,14 +180,24 @@ type headerRule struct {
 	tmpl *valueTemplate
 }
 
-// headerSetter applies a set of configured headers to outgoing requests, with
-// variable interpolation. It mirrors nginx's proxy_set_header.
-type headerSetter struct {
+// HeaderApplier injects/overrides headers on a request before it is forwarded.
+// It is the pluggable "set_headers" stage. The default is TemplateHeaderSetter
+// (config-driven, nginx-style); an SDK user may supply their own — e.g. to add
+// a generated request ID or values from an external source. Embed
+// TemplateHeaderSetter and override Apply to keep the config headers and add more.
+type HeaderApplier interface {
+	Apply(req Request, r *http.Request)
+}
+
+// TemplateHeaderSetter is the default HeaderApplier: it applies a set of
+// configured headers to outgoing requests, with variable interpolation. It
+// mirrors nginx's proxy_set_header.
+type TemplateHeaderSetter struct {
 	rules []headerRule
 }
 
-func newHeaderSetter(m map[string]string) (*headerSetter, error) {
-	hs := &headerSetter{}
+func newHeaderSetter(m map[string]string) (*TemplateHeaderSetter, error) {
+	hs := &TemplateHeaderSetter{}
 	for name, val := range m {
 		if strings.TrimSpace(name) == "" {
 			return nil, fmt.Errorf("set_headers: header name must not be empty")
@@ -201,11 +211,11 @@ func newHeaderSetter(m map[string]string) (*headerSetter, error) {
 	return hs, nil
 }
 
-// apply sets the configured headers on the outgoing request r, deriving values
+// Apply sets the configured headers on the outgoing request r, deriving values
 // from the captured request req. All values are rendered first, so variables
 // always resolve against the original request rather than headers set here.
 // Setting "Host" updates r.Host, since Go's Header map does not control it.
-func (hs *headerSetter) apply(req Request, r *http.Request) {
+func (hs *TemplateHeaderSetter) Apply(req Request, r *http.Request) {
 	values := make([]string, len(hs.rules))
 	for i, rule := range hs.rules {
 		values[i] = rule.tmpl.render(req)

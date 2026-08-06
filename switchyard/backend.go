@@ -1,4 +1,4 @@
-package main
+package switchyard
 
 import (
 	"fmt"
@@ -8,10 +8,12 @@ import (
 	"net/url"
 )
 
-// backend is a configured upstream that Switchyard can forward requests to.
-type backend struct {
-	id    string
-	url   string
+// Backend is a configured upstream that Switchyard can forward requests to.
+// ID and URL are exported so custom BackendSelectors and Loggers can inspect
+// them; proxy is the internal reverse-proxy handler.
+type Backend struct {
+	ID    string
+	URL   string
 	proxy *httputil.ReverseProxy
 }
 
@@ -21,8 +23,8 @@ type backend struct {
 // each backend's transport is wrapped so per-request round-trip timing and
 // status can be recorded. Validation fails fast so misconfiguration surfaces at
 // startup.
-func buildBackends(cfgs []BackendConfig, logging bool) ([]*backend, error) {
-	var backends []*backend
+func buildBackends(cfgs []BackendConfig, logging bool) ([]*Backend, error) {
+	var backends []*Backend
 	seenURL := make(map[string]bool)
 	seenID := make(map[string]bool)
 	for _, bc := range cfgs {
@@ -52,9 +54,9 @@ func buildBackends(cfgs []BackendConfig, logging bool) ([]*backend, error) {
 		}
 		seenID[id] = true
 
-		b := &backend{
-			id:    id,
-			url:   raw,
+		b := &Backend{
+			ID:    id,
+			URL:   raw,
 			proxy: httputil.NewSingleHostReverseProxy(target),
 		}
 		// When any logging is enabled, wrap the transport so the backend
@@ -66,7 +68,7 @@ func buildBackends(cfgs []BackendConfig, logging bool) ([]*backend, error) {
 		// explicitly: log them in Switchyard's format and return a consistent
 		// 502 instead of relying on the default handler.
 		b.proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("switchyard: backend %s failed: %v", b.url, err)
+			log.Printf("switchyard: backend %s failed: %v", b.URL, err)
 			http.Error(w, "switchyard: backend unavailable", http.StatusBadGateway)
 		}
 		backends = append(backends, b)

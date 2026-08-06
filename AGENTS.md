@@ -93,11 +93,15 @@ Feature documentation lives in [`docs/`](docs/). Every feature has its own docum
 
 ## Extending Switchyard
 
-The canonical pattern for adding a new action type, in this order:
+Switchyard is both a turnkey binary and an importable library. Two kinds of extension:
+
+**As an SDK user (no core edits).** Every core stage is an interface with a config-driven default. Override a stage by assigning your own implementation to an exported field on `Proxy`/`Location`, or embed the default and override one method. `New(cfg)` reproduces the turnkey behavior exactly; overrides are additive. See [`docs/extending.md`](docs/extending.md).
+
+**As a contributor.** When adding a new pluggable stage, follow the established mold: interface + a default struct built from config in `New`, wired to an exported field, with defaults reproducing prior behavior. When adding a new action type, in this order:
 
 1. Add a new `Action` constant in `decision.go`
 2. Add a compiled location kind in `location.go` (`compileLocations`) if the action requires a new location type
-3. Add a case in `Proxy.decide` (`proxy.go`) that returns a `Decision` with the new action — no I/O, just logic
+3. Add a case in `DefaultDecider.Decide` (`decide.go`) that returns a `Decision` with the new action — no I/O, just logic
 4. Add a case in `Proxy.act` (`proxy.go`) that performs the side effect
 
 Each step compiles independently and can be reviewed before moving on. Keep decide passive; keep act the only place with side effects.

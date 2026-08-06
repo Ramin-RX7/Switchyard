@@ -17,6 +17,7 @@ Switchyard sits in front of your backend services and routes incoming traffic to
 - **Custom logging** — structured log lines with a user-defined format, parameterized fields, and optional body capture
 - **Multiple log outputs** — write to console, file, or both; stacked global and per-location loggers
 - **Fail-fast validation** — all configuration errors (unknown variables, bad regexes, missing backends) are caught at startup
+- **Usable two ways** — run the turnkey binary with just a JSON config (nginx-style), or import it as a Go **SDK** and override any pipeline stage (routing, backend selection, logging, …) with your own code — no forking. See [docs/extending.md](docs/extending.md)
 
 ---
 
@@ -25,7 +26,7 @@ Switchyard sits in front of your backend services and routes incoming traffic to
 **1. Build**
 
 ```bash
-go build -o switchyard ./cmd/switchyard/
+go build -o Switchyard ./cmd/switchyard/
 ```
 
 **2. Create a config file**
@@ -42,7 +43,7 @@ go build -o switchyard ./cmd/switchyard/
 **3. Run**
 
 ```bash
-./switchyard -config switchyard.json
+./Switchyard -config switchyard.json
 ```
 
 Switchyard will start listening on `:8080` and forward all requests to `http://127.0.0.1:3000`.
@@ -121,3 +122,4 @@ Full reference documentation is in the [`docs/`](docs/) directory:
 | [docs/variables.md](docs/variables.md) | All available `$variable` placeholders |
 | [docs/set-headers.md](docs/set-headers.md) | Header injection with variable substitution |
 | [docs/logging.md](docs/logging.md) | Log format, fields, outputs, body capture |
+| [docs/extending.md](docs/extending.md) | Using Switchyard as an SDK — override pipeline stages in your own Go code |

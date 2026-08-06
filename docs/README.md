@@ -12,5 +12,6 @@ This directory contains reference documentation for every Switchyard feature and
 | [variables.md](variables.md) | All available `$variable` placeholders and where they can be used |
 | [set-headers.md](set-headers.md) | Injecting request headers with variable substitution |
 | [logging.md](logging.md) | Custom log format, available fields, outputs, and body capture |
+| [extending.md](extending.md) | Using Switchyard as an SDK — overriding pipeline stages with your own Go code |
 
-Start with [concepts.md](concepts.md) if you are new to the project, then [architecture.md](architecture.md) to understand the request flow before diving into individual feature docs.
+Start with [concepts.md](concepts.md) if you are new to the project, then [architecture.md](architecture.md) to understand the request flow before diving into individual feature docs. For customizing behavior with your own code, see [extending.md](extending.md).

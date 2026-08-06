@@ -1,4 +1,4 @@
-package main
+package switchyard
 
 import (
 	"encoding/json"
@@ -42,14 +42,15 @@ type LocationConfig struct {
 
 // BackendConfig describes one configured upstream. URL is required; ID is
 // optional and defaults to URL. IDs and URLs must each be unique across
-// backends (enforced in newProxy).
+// backends (enforced in New).
 type BackendConfig struct {
 	ID  string `json:"id"`
 	URL string `json:"url"`
 }
 
-// loadConfig reads and parses the configuration file at path.
-func loadConfig(path string) (Config, error) {
+// LoadConfig reads and parses the configuration file at path. It is exported so
+// SDK users can reuse the same JSON config format as the turnkey binary.
+func LoadConfig(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)

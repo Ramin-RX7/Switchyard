@@ -1,47 +1,34 @@
+// Command switchyard is the turnkey, config-only reverse proxy: point it at a
+// JSON config and run, nginx-style, with no Go code required.
+//
+// It is also the reference example of using Switchyard as a library — everything
+// it does (LoadConfig, New, ListenAndServe) is exported, so an SDK user can
+// start from this exact behavior and override any pluggable stage. See
+// github.com/Ramin-RX7/Switchyard and examples/ for customization.
 package main
 
 import (
 	"flag"
 	"log"
-	"net/http"
-	"time"
-)
 
-const defaultListen = ":8091"
+	sw "github.com/Ramin-RX7/Switchyard/switchyard"
+)
 
 func main() {
 	configPath := flag.String("config", "switchyard.json", "path to configuration file")
 	flag.Parse()
 
-	cfg, err := loadConfig(*configPath)
+	cfg, err := sw.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("switchyard: %v", err)
 	}
 
-	p, err := newProxy(cfg)
+	p, err := sw.New(cfg)
 	if err != nil {
 		log.Fatalf("switchyard: %v", err)
 	}
 
-	listen := cfg.Listen
-	if listen == "" {
-		listen = defaultListen
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", p.handle)
-
-	srv := &http.Server{
-		Addr:    listen,
-		Handler: mux,
-		// Defensive timeouts against slow clients. Read/write body timeouts are
-		// left unset so legitimate slow or large proxied responses are not cut off.
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	log.Printf("switchyard: listening on %s, %d backend(s), %d location(s)", listen, len(p.backends), len(p.locations))
-	if err := srv.ListenAndServe(); err != nil {
+	if err := p.ListenAndServe(cfg.Listen); err != nil {
 		log.Fatalf("switchyard: server stopped: %v", err)
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package switchyard
 
 import (
 	"bufio"
@@ -14,6 +14,19 @@ import (
 	"time"
 )
 
+// Logger renders the observations about one request/response exchange and emits
+// them. It is the pluggable logging stage: the built-in FormatLogger renders a
+// user-defined format string, but SDK users may supply their own implementation
+// (e.g. structured JSON, metrics, a tracing span).
+//
+// NeedsRequestBody / NeedsResponseBody let the proxy avoid buffering bodies that
+// no active logger will read; a logger that never uses them should return false.
+type Logger interface {
+	Log(rec *LogRecord)
+	NeedsRequestBody() bool
+	NeedsResponseBody() bool
+}
+
 // LogConfig is the user-controlled logging configuration. It is optional: when
 // absent from the config file Switchyard falls back to its built-in operational
 // log line.
@@ -27,17 +40,18 @@ type LogConfig struct {
 	Format string `json:"format"`
 }
 
-// Logger renders a logRecord using a user-defined format and writes the result
-// to the configured outputs. It is safe for concurrent use.
-type Logger struct {
+// FormatLogger is the default Logger. It renders a LogRecord using a
+// user-defined format and writes the result to the configured outputs. It is
+// safe for concurrent use.
+type FormatLogger struct {
 	format *logFormat
 	mu     sync.Mutex
 	w      io.Writer
 }
 
 // newLogger validates the configuration, compiles the format, and opens the
-// configured outputs.
-func newLogger(cfg LogConfig) (*Logger, error) {
+// configured outputs, returning the default FormatLogger.
+func newLogger(cfg LogConfig) (*FormatLogger, error) {
 	if strings.TrimSpace(cfg.Format) == "" {
 		return nil, fmt.Errorf("logging: format must not be empty")
 	}
@@ -70,40 +84,41 @@ func newLogger(cfg LogConfig) (*Logger, error) {
 		}
 	}
 
-	return &Logger{format: f, w: io.MultiWriter(ws...)}, nil
+	return &FormatLogger{format: f, w: io.MultiWriter(ws...)}, nil
 }
 
-// needsRequestBody reports whether the configured format references the request
+// NeedsRequestBody reports whether the configured format references the request
 // body, so the proxy can avoid buffering bodies that are never logged.
-func (l *Logger) needsRequestBody() bool { return l.format.refs["request_body"] }
+func (l *FormatLogger) NeedsRequestBody() bool { return l.format.refs["request_body"] }
 
-// needsResponseBody reports whether the configured format references the
+// NeedsResponseBody reports whether the configured format references the
 // response body, so the proxy only tees responses that are actually logged.
-func (l *Logger) needsResponseBody() bool { return l.format.refs["response_body"] }
+func (l *FormatLogger) NeedsResponseBody() bool { return l.format.refs["response_body"] }
 
-// log renders rec and writes a single line to all outputs. The write is
+// Log renders rec and writes a single line to all outputs. The write is
 // serialized so concurrent requests do not interleave within a line.
-func (l *Logger) log(rec *logRecord) {
+func (l *FormatLogger) Log(rec *LogRecord) {
 	line := l.format.render(rec)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	io.WriteString(l.w, line+"\n")
 }
 
-// logRecord holds everything observed about a single request/response exchange.
+// LogRecord holds everything observed about a single request/response exchange.
 // Fields that were never reached (e.g. backend timing for a rejected request)
-// stay at their zero value and render as "-".
-type logRecord struct {
-	req          Request
-	backend      *backend  // selected upstream, nil when none was chosen
-	forwardTime  time.Time // sent to backend
-	appRespTime  time.Time // response received from backend
-	endTime      time.Time // response fully handled
-	requestBody  []byte
-	responseBody []byte
-	appStatus    int // status returned by the backend, 0 if none
-	status       int // status returned to the client
-	respHeader   http.Header
+// stay at their zero value and render as "-". Its fields are exported so custom
+// Logger implementations can read them.
+type LogRecord struct {
+	Req          Request
+	Backend      *Backend  // selected upstream, nil when none was chosen
+	ForwardTime  time.Time // sent to backend
+	AppRespTime  time.Time // response received from backend
+	EndTime      time.Time // response fully handled
+	RequestBody  []byte
+	ResponseBody []byte
+	AppStatus    int // status returned by the backend, 0 if none
+	Status       int // status returned to the client
+	RespHeader   http.Header
 }
 
 // --- format compilation -----------------------------------------------------
@@ -199,7 +214,7 @@ const (
 	absent        = "-"
 )
 
-func (f *logFormat) render(rec *logRecord) string {
+func (f *logFormat) render(rec *LogRecord) string {
 	var b strings.Builder
 	for _, s := range f.segments {
 		if s.field == "" {
@@ -211,56 +226,56 @@ func (f *logFormat) render(rec *logRecord) string {
 	return b.String()
 }
 
-func renderField(rec *logRecord, field, param string) string {
+func renderField(rec *LogRecord, field, param string) string {
 	switch field {
 	case "method":
-		return rec.req.Method
+		return rec.Req.Method
 	case "url":
-		return rec.req.URL
+		return rec.Req.URL
 	case "path":
-		return rec.req.Path
+		return rec.Req.Path
 	case "request_body":
-		if rec.requestBody == nil {
+		if rec.RequestBody == nil {
 			return absent
 		}
-		return string(rec.requestBody)
+		return string(rec.RequestBody)
 	case "response_body":
-		if rec.responseBody == nil {
+		if rec.ResponseBody == nil {
 			return absent
 		}
-		return string(rec.responseBody)
+		return string(rec.ResponseBody)
 	case "backend_id":
-		if rec.backend == nil {
+		if rec.Backend == nil {
 			return absent
 		}
-		return rec.backend.id
+		return rec.Backend.ID
 	case "status":
-		return statusString(rec.status)
+		return statusString(rec.Status)
 	case "app_status":
-		return statusString(rec.appStatus)
+		return statusString(rec.AppStatus)
 	case "receive_time":
-		return timeString(rec.req.ReceivedAt)
+		return timeString(rec.Req.ReceivedAt)
 	case "forward_time":
-		return timeString(rec.forwardTime)
+		return timeString(rec.ForwardTime)
 	case "app_response_time":
-		return timeString(rec.appRespTime)
+		return timeString(rec.AppRespTime)
 	case "end_time":
-		return timeString(rec.endTime)
+		return timeString(rec.EndTime)
 	case "request_duration":
-		return durationString(rec.req.ReceivedAt, rec.endTime)
+		return durationString(rec.Req.ReceivedAt, rec.EndTime)
 	case "app_duration":
-		return durationString(rec.forwardTime, rec.appRespTime)
+		return durationString(rec.ForwardTime, rec.AppRespTime)
 	case "req_header":
-		return valueOrAbsent(rec.req.Header.Get(param))
+		return valueOrAbsent(rec.Req.Header.Get(param))
 	case "resp_header":
-		if rec.respHeader == nil {
+		if rec.RespHeader == nil {
 			return absent
 		}
-		return valueOrAbsent(rec.respHeader.Get(param))
+		return valueOrAbsent(rec.RespHeader.Get(param))
 	case "query":
-		return valueOrAbsent(rec.req.Query.Get(param))
+		return valueOrAbsent(rec.Req.Query.Get(param))
 	case "var":
-		v, _ := requestVar(rec.req, param)
+		v, _ := requestVar(rec.Req, param)
 		return valueOrAbsent(v)
 	}
 	return absent
@@ -298,9 +313,9 @@ func valueOrAbsent(s string) string {
 
 // anyNeedsRequestBody reports whether any of the loggers reference the request
 // body, so the proxy can skip buffering it when none do.
-func anyNeedsRequestBody(ls []*Logger) bool {
+func anyNeedsRequestBody(ls []Logger) bool {
 	for _, l := range ls {
-		if l.needsRequestBody() {
+		if l.NeedsRequestBody() {
 			return true
 		}
 	}
@@ -309,9 +324,9 @@ func anyNeedsRequestBody(ls []*Logger) bool {
 
 // anyNeedsResponseBody reports whether any of the loggers reference the response
 // body, so the proxy only tees responses that are actually logged.
-func anyNeedsResponseBody(ls []*Logger) bool {
+func anyNeedsResponseBody(ls []Logger) bool {
 	for _, l := range ls {
-		if l.needsResponseBody() {
+		if l.NeedsResponseBody() {
 			return true
 		}
 	}
@@ -320,7 +335,7 @@ func anyNeedsResponseBody(ls []*Logger) bool {
 
 // captureBody reads the request body into rec and restores it so the backend
 // still receives the full body. Used only when the log format references it.
-func captureBody(r *http.Request, rec *logRecord) {
+func captureBody(r *http.Request, rec *LogRecord) {
 	if r.Body == nil {
 		return
 	}
@@ -329,7 +344,7 @@ func captureBody(r *http.Request, rec *logRecord) {
 	if err != nil {
 		return
 	}
-	rec.requestBody = data
+	rec.RequestBody = data
 	r.Body = io.NopCloser(bytes.NewReader(data))
 }
 
@@ -339,22 +354,22 @@ type contextKey int
 const recordKey contextKey = iota
 
 // loggingTransport records when a request is sent to the backend, when the
-// response returns, and the backend's status code, into the logRecord carried
+// response returns, and the backend's status code, into the LogRecord carried
 // on the request context.
 type loggingTransport struct {
 	base http.RoundTripper
 }
 
 func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	rec, _ := r.Context().Value(recordKey).(*logRecord)
+	rec, _ := r.Context().Value(recordKey).(*LogRecord)
 	if rec != nil {
-		rec.forwardTime = time.Now()
+		rec.ForwardTime = time.Now()
 	}
 	resp, err := t.base.RoundTrip(r)
 	if rec != nil {
-		rec.appRespTime = time.Now()
+		rec.AppRespTime = time.Now()
 		if resp != nil {
-			rec.appStatus = resp.StatusCode
+			rec.AppStatus = resp.StatusCode
 		}
 	}
 	return resp, err

@@ -88,10 +88,18 @@ func New(cfg Config) (*Proxy, error) {
 	}
 
 	p.Router = &DefaultRouter{Locations: p.Locations}
-	p.Actor = &DefaultActor{p: p}
-	p.Decider = &DefaultDecider{p: p}
+	p.Actor = &DefaultActor{env: p}
+	p.Decider = &DefaultDecider{env: p}
 	return p, nil
 }
+
+// The following methods let *Proxy satisfy the narrow routingEnv/headerEnv
+// interfaces that DefaultDecider/DefaultActor depend on. They read live fields
+// so overrides assigned after New still take effect.
+func (p *Proxy) hasLocations() bool              { return len(p.Locations) > 0 }
+func (p *Proxy) match(req Request) *Location     { return p.Router.Match(req) }
+func (p *Proxy) globalPool() []*Backend          { return p.Pool.Backends() }
+func (p *Proxy) globalSelector() BackendSelector { return p.Selector }
 
 // Handler returns an http.Handler that serves the proxy. Use it to mount
 // Switchyard inside an existing server or middleware chain.

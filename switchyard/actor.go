@@ -10,20 +10,27 @@ type Actor interface {
 	Act(w http.ResponseWriter, r *http.Request, req Request, d Decision)
 }
 
+// headerEnv is the narrow slice of the Proxy that DefaultActor depends on.
+// *Proxy implements it, applying global then location headers (reading p.Headers
+// live so overrides late-bind).
+type headerEnv interface {
+	applyStackedHeaders(req Request, r *http.Request, loc *Location)
+}
+
 // DefaultActor is the built-in Actor. It applies stacked headers before
 // forwarding or serving, and turns a reject into a consistent HTTP error.
 type DefaultActor struct {
-	p *Proxy
+	env headerEnv
 }
 
 // Act carries out the decision.
 func (a *DefaultActor) Act(w http.ResponseWriter, r *http.Request, req Request, d Decision) {
 	switch d.Action {
 	case ActionForward:
-		a.p.applyStackedHeaders(req, r, d.Location)
+		a.env.applyStackedHeaders(req, r, d.Location)
 		d.Backend.proxy.ServeHTTP(w, r)
 	case ActionStatic:
-		a.p.applyStackedHeaders(req, r, d.Location)
+		a.env.applyStackedHeaders(req, r, d.Location)
 		d.Location.Static.Serve(w, r, req)
 	default: // ActionReject
 		status := d.Status

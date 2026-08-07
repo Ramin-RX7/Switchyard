@@ -18,19 +18,28 @@ type Decider interface {
 // pool via that location's Selector; otherwise it selects over the global pool
 // via the Proxy's Selector.
 //
-// It reads its inputs (locations, global pool, global selector) from the Proxy,
-// so reassigning p.Selector or a Location's Selector after New takes effect
-// without rebuilding the decider.
+// It reads its inputs (locations, global pool, global selector) live from the
+// routingEnv, so reassigning p.Selector/p.Router/p.Pool or a Location's Selector
+// after New takes effect without rebuilding the decider.
 type DefaultDecider struct {
-	p *Proxy
+	env routingEnv
+}
+
+// routingEnv is the narrow slice of the Proxy that DefaultDecider depends on.
+// *Proxy implements it, reading its fields live so overrides late-bind.
+type routingEnv interface {
+	hasLocations() bool
+	match(req Request) *Location
+	globalPool() []*Backend
+	globalSelector() BackendSelector
 }
 
 // Decide implements Decider. It performs matching and an atomic counter
 // increment only — no I/O and no forwarding.
 func (d *DefaultDecider) Decide(req Request) Decision {
-	p := d.p
-	if len(p.Locations) > 0 {
-		loc := p.Router.Match(req)
+	e := d.env
+	if e.hasLocations() {
+		loc := e.match(req)
 		if loc == nil {
 			return Decision{Action: ActionReject, Reason: "no matching location", Status: http.StatusNotFound}
 		}
@@ -45,11 +54,11 @@ func (d *DefaultDecider) Decide(req Request) Decision {
 		return Decision{Action: ActionForward, Reason: "round-robin", Backend: b, Location: loc}
 	}
 
-	pool := p.Pool.Backends()
+	pool := e.globalPool()
 	if len(pool) == 0 {
 		return Decision{Action: ActionReject, Reason: "no backends configured"}
 	}
-	b := p.Selector.Select(pool, req)
+	b := e.globalSelector().Select(pool, req)
 	if b == nil {
 		return Decision{Action: ActionReject, Reason: "no backend available"}
 	}

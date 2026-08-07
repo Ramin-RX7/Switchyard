@@ -102,6 +102,12 @@ Switchyard is both a turnkey binary and an importable library. Two kinds of exte
 1. Add a new `Action` constant in `decision.go`
 2. Add a compiled location kind in `location.go` (`compileLocations`) if the action requires a new location type
 3. Add a case in `DefaultDecider.Decide` (`decide.go`) that returns a `Decision` with the new action — no I/O, just logic
-4. Add a case in `Proxy.act` (`proxy.go`) that performs the side effect
+4. Add a case in `DefaultActor.Act` (`actor.go`) that performs the side effect
 
-Each step compiles independently and can be reviewed before moving on. Keep decide passive; keep act the only place with side effects.
+Each step compiles independently and can be reviewed before moving on. Keep decide passive; keep the actor the only place with side effects.
+
+---
+
+## Testing (required)
+
+Changes to behavior must come with tests. Every stage/feature is tested along three axes: the real request flow works, the default behavior is correct, and a custom user implementation is honored. When you change a stage's logic, update its `*_test.go` accordingly; a new pluggable stage ships with its own `<stage>_test.go` (default + custom-override + an end-to-end assertion). Run `go test ./...` (and `-race`) before finishing. See [`docs/testing.md`](docs/testing.md) for the layout, helpers, and full rule.

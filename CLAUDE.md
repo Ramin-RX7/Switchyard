@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 go build -o Switchyard ./cmd/switchyard/        # build the binary
 go run ./cmd/switchyard/ -config switchyard.json # run directly (defaults to ./switchyard.json)
-go test ./...                                    # run all tests (no tests exist yet)
+go test ./...                                    # run all tests
+go test -race ./switchyard/                      # tests with the race detector
 go test -run TestName ./...                      # run a single test
 go vet ./...                                     # static checks
 gofmt -l .                                       # list files needing formatting (library is at repo root)
@@ -30,6 +31,8 @@ Full feature documentation is in [`docs/`](docs/):
 | [docs/variables.md](docs/variables.md) | All `$variable` placeholders and where they can be used |
 | [docs/set-headers.md](docs/set-headers.md) | Header injection, variable syntax, `Host` special case, stacking |
 | [docs/logging.md](docs/logging.md) | Format fields, outputs, body capture, `loggingTransport`, `statusWriter` |
+| [docs/extending.md](docs/extending.md) | SDK usage — overriding any of the 8 pluggable stages with your own code |
+| [docs/testing.md](docs/testing.md) | Test suite layout, per-stage testing patterns, and the tests-required contributor rule |
 
 ## Architecture
 
@@ -52,6 +55,7 @@ See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, 
 - All side effects belong in the `Actor`. Never make routing decisions there.
 - Adding a new action type: constant in `decision.go` → case in `DefaultDecider.Decide` → case in `DefaultActor.Act`.
 - Behavior parity: `New(cfg)` must reproduce the turnkey binary's behavior exactly; overrides are additive.
+- Tests required: behavior changes ship with tests (flow + default + custom override); run `go test ./...`. See [docs/testing.md](docs/testing.md).
 
 ## Feature Quick-Reference
 

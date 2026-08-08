@@ -3,23 +3,42 @@
 
     "max_connections": 500,
     "timeouts": {
-        "request": "30s",
-        "tls_handshake": "5s"
+        "request": 30,
+        "tls_handshake": 5
     },
     "transport": {
         "max_idle_conns": 512,
         "max_idle_conns_per_host": 128,
-        "idle_conn_timeout": "90s"
+        "idle_conn_timeout": 90
     },
     "server": {
-        "read_header_timeout": "10s",
-        "idle_timeout": "60s"
+        "read_header_timeout": 10,
+        "idle_timeout": 60
     },
     "overflow": {
         "strategy": "reroute",
-        "queue_timeout": "2s",
+        "queue_timeout": 2,
         "status": 503,
-        "body": "switchyard: capacity reached, retry shortly"
+        "headers": {
+            "Content-Type": "application/json",
+            "Retry-After": "2"
+        },
+        "body": "{\"error\":\"capacity reached, retry shortly\",\"at\":\"$time_iso8601\"}"
+    },
+
+    "backend_error": {
+        "status": 502,
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "body": "{\"error\":\"upstream unavailable\",\"path\":\"$uri\"}"
+    },
+    "not_found": {
+        "status": 404,
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "body": "{\"error\":\"no route\",\"path\":\"$uri\"}"
     },
 
     "backends": [
@@ -33,7 +52,7 @@
             "url": "http://127.0.0.1:9002",
             "max_connections": 100,
             "timeouts": {
-                "request": "10s"
+                "request": 10
             }
         },
         {
@@ -79,6 +98,17 @@
             "path": "/media/",
             "type": "static",
             "root": "/tmp/media"
+        },
+        {
+            "path": "/health",
+            "type": "response",
+            "response": {
+                "status": 200,
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "body": "{\"status\":\"ok\",\"time\":\"$time_iso8601\"}"
+            }
         },
         {
             "path": "/",

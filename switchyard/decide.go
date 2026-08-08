@@ -46,6 +46,9 @@ func (d *DefaultDecider) Decide(req Request) Decision {
 		if loc.Kind == KindStatic {
 			return Decision{Action: ActionStatic, Reason: "location " + loc.raw, Location: loc}
 		}
+		if loc.Kind == KindRespond {
+			return Decision{Action: ActionRespond, Reason: "location " + loc.raw, Location: loc}
+		}
 		b := loc.Selector.Select(loc.Pool.Backends(), req)
 		if b == nil {
 			return Decision{Action: ActionReject, Reason: "location " + loc.raw + ": empty pool",

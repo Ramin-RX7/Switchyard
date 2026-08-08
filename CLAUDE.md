@@ -36,7 +36,7 @@ Full feature documentation is in [`docs/`](docs/):
 | [docs/variables.md](docs/variables.md) | All `$variable` placeholders and where they can be used |
 | [docs/set-headers.md](docs/set-headers.md) | Header injection, variable syntax, `Host` special case, stacking |
 | [docs/logging.md](docs/logging.md) | Format fields, outputs, body capture, `loggingTransport`, `statusWriter` |
-| [docs/extending.md](docs/extending.md) | SDK usage — overriding any of the 8 pluggable stages with your own code |
+| [docs/extending.md](docs/extending.md) | SDK usage — overriding any of the 9 pluggable stages with your own code |
 | [docs/testing.md](docs/testing.md) | Test suite layout, per-stage testing patterns, and the tests-required contributor rule |
 
 ## Architecture
@@ -53,7 +53,7 @@ The request lifecycle is split into three strictly separate stages — preserve 
 
 See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, package layout, and extension pattern.
 
-**Pluggable stages (SDK).** All 8 core stages are interfaces with config-driven defaults, overridable by SDK users via exported fields on `Proxy`/`Location`: `Decider` (`p.Decider`), `Actor` (`p.Actor`), `Router` (`p.Router`), `BackendSelector` (`p.Selector`/`loc.Selector`, default `RoundRobinSelector`), `BackendPool` (`p.Pool`/`loc.Pool`, default `StaticPool`), `HeaderApplier` (`p.Headers`/`loc.Headers`, default `TemplateHeaderSetter`), `StaticServer` (`loc.Static`, default `FileServer`), `Logger` (`p.Logger`/`loc.Logger`, default `FormatLogger`). See [docs/extending.md](docs/extending.md).
+**Pluggable stages (SDK).** All 9 core stages are interfaces with config-driven defaults, overridable by SDK users via exported fields on `Proxy`/`Location`: `Decider` (`p.Decider`), `Actor` (`p.Actor`), `Router` (`p.Router`), `BackendSelector` (`p.Selector`/`loc.Selector`, default `RoundRobinSelector`), `BackendPool` (`p.Pool`/`loc.Pool`, default `StaticPool`), `HeaderApplier` (`p.Headers`/`loc.Headers`, default `TemplateHeaderSetter`), `StaticServer` (`loc.Static`, default `FileServer`), `ResponseGenerator` (`loc.Responder` for response locations, `p.NotFound`/`p.BadGateway` for global error responses, default `TemplateResponder`), `Logger` (`p.Logger`/`loc.Logger`, default `FormatLogger`). See [docs/extending.md](docs/extending.md).
 
 **Key design rules:**
 - All routing logic belongs in the `Decider`. Never perform I/O there.
@@ -66,9 +66,11 @@ See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, 
 
 **Backends** ([docs/backends.md](docs/backends.md)): each backend wraps `httputil.NewSingleHostReverseProxy` with a custom `ErrorHandler` (→ 502 on failure). Selection is lock-free round-robin (`atomic.Uint64`). `X-Forwarded-For` is maintained automatically.
 
-**Location routing** ([docs/routing.md](docs/routing.md)): optional `locations` array; top-to-bottom, first-match wins. Each location carries its own backend pool and independent round-robin counter. `type: "static"` serves files via `http.FileServer`. No match → 404.
+**Location routing** ([docs/routing.md](docs/routing.md)): optional `locations` array; top-to-bottom, first-match wins. Each location carries its own backend pool and independent round-robin counter. `type: "static"` serves files via `http.FileServer`; `type: "response"` returns a canned Switchyard-generated response. No match → 404.
 
-**Variables** ([docs/variables.md](docs/variables.md)): nginx-style `$name`/`${name}` placeholders resolved from the request snapshot. Used in `set_headers` values and `{var.NAME}` log fields. Validated at startup.
+**Response generator** ([docs/config-reference.md](docs/config-reference.md#response)): abstract `ResponseGenerator` (default `TemplateResponder`) producing status + headers + body with `$variable` substitution. Powers the `type: "response"` location plus the configurable built-in error responses — top-level `backend_error` (502 unreachable/empty pool), `not_found` (404 no match), and the `overflow` reject response (now with `headers` + variable-capable body).
+
+**Variables** ([docs/variables.md](docs/variables.md)): nginx-style `$name`/`${name}` placeholders resolved from the request snapshot. Used in `set_headers` values, `{var.NAME}` log fields, and `response`/`backend_error`/`not_found`/`overflow` bodies and headers. Includes `$time_iso8601` and `$time_unix` (request-receipt time). Validated at startup.
 
 **set_headers** ([docs/set-headers.md](docs/set-headers.md)): map of header name → template value; applied before forwarding. Global and location headers stack (`applyStackedHeaders`): location wins on conflicts, all other globals retained.
 

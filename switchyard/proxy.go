@@ -26,6 +26,8 @@ const DefaultListen = ":8091"
 //	Selector — backend selection for the global pool when no locations are set
 //	Pool     — the global backend pool (default: StaticPool from config)
 //	Locations — the compiled location blocks; each carries its own pluggable stages
+//	NotFound  — response when no location matched (default: 404 TemplateResponder)
+//	BadGateway — response when an upstream is unreachable or a pool is empty (default: 502)
 //	Transport — the shared http.RoundTripper used for all backends (tuned default)
 //	MaxInFlight — optional ceiling on concurrent requests (0 = unlimited)
 //
@@ -41,6 +43,12 @@ type Proxy struct {
 	Selector  BackendSelector // global-pool selection (used only when no locations)
 	Pool      BackendPool     // global backend pool (used only when no locations)
 	Locations []*Location
+
+	// NotFound / BadGateway generate the built-in error responses (404 when no
+	// location matched; 502 when an upstream is unreachable or a pool is empty).
+	// New wires config-driven defaults; reassign before serving to override.
+	NotFound   ResponseGenerator
+	BadGateway ResponseGenerator
 
 	// Transport, when non-nil, is a global override used to reach ALL backends.
 	// By default it is nil: New builds a tuned per-backend transport from config
@@ -93,23 +101,45 @@ func New(cfg Config) (*Proxy, error) {
 		return nil, err
 	}
 
+	overflow, err := cfg.overflowPolicy()
+	if err != nil {
+		return nil, err
+	}
+	badGateway, err := responderOf(cfg.BackendError, http.StatusBadGateway, "switchyard: backend unavailable")
+	if err != nil {
+		return nil, err
+	}
+	notFound, err := responderOf(cfg.NotFound, http.StatusNotFound, "switchyard: no matching location")
+	if err != nil {
+		return nil, err
+	}
+
 	rh, rt, wt, it := cfg.serverTimeouts()
 	p := &Proxy{
 		Logger:         logger,
 		Headers:        headers,
 		Pool:           NewStaticPool(backends),
 		Selector:       &RoundRobinSelector{},
+		NotFound:       notFound,
+		BadGateway:     badGateway,
 		MaxInFlight:    ptrInt(cfg.MaxConnections, 0),
-		overflow:       cfg.overflowPolicy(),
+		overflow:       overflow,
 		srvReadHeader:  rh,
 		srvReadTimeout: rt,
 		srvWriteout:    wt,
 		srvIdle:        it,
 	}
 	// Install each backend's own transport via the shim (which also records
-	// timing and honors a global Proxy.Transport override at request time).
+	// timing and honors a global Proxy.Transport override at request time), plus
+	// a failure handler that logs and renders the configurable BadGateway
+	// response (read live so an SDK override of p.BadGateway takes effect).
 	for _, b := range backends {
+		b := b
 		b.proxy.Transport = &proxyTransport{p: p, base: b.transport}
+		b.proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("switchyard: backend %s failed: %v", b.URL, err)
+			p.BadGateway.Generate(w, r, captureRequest(r))
+		}
 	}
 
 	if len(cfg.Locations) > 0 {
@@ -147,6 +177,11 @@ func (p *Proxy) forwardPool(d Decision) []*Backend {
 	return p.Pool.Backends()
 }
 
+// notFoundResponder / badGatewayResponder expose the global error responders to
+// DefaultActor, reading them live so overrides assigned after New take effect.
+func (p *Proxy) notFoundResponder() ResponseGenerator   { return p.NotFound }
+func (p *Proxy) badGatewayResponder() ResponseGenerator { return p.BadGateway }
+
 // Handler returns an http.Handler that serves the proxy. Use it to mount
 // Switchyard inside an existing server or middleware chain. When MaxInFlight is
 // set, the returned handler enforces the project-wide concurrency ceiling via
@@ -168,7 +203,7 @@ func (p *Proxy) globalLimit(h http.Handler) http.Handler {
 	o := p.overflow
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !o.acquire(r.Context(), lim) {
-			o.reject(w)
+			o.reject(w, r, captureRequest(r))
 			return
 		}
 		defer lim.release()

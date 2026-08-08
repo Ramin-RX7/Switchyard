@@ -22,31 +22,24 @@ const (
 	defaultOverflowBody        = "switchyard: capacity reached"
 )
 
-// Duration wraps time.Duration so it can be written as a Go duration string in
-// JSON ("30s", "1m500ms"). An empty string or null parses to 0 ("no limit").
+// Duration is a timeout expressed in JSON as a plain integer number of seconds
+// (e.g. 30). null/0 means 0 ("no limit"). Internally it is a time.Duration, so
+// every consumer keeps sub-second precision when constructed from Go.
 type Duration time.Duration
 
 func (d Duration) std() time.Duration { return time.Duration(d) }
 
 func (d *Duration) UnmarshalJSON(b []byte) error {
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return fmt.Errorf("duration must be a string like \"30s\": %w", err)
+	var secs int64
+	if err := json.Unmarshal(b, &secs); err != nil {
+		return fmt.Errorf("duration must be an integer number of seconds: %w", err)
 	}
-	if s == "" {
-		*d = 0
-		return nil
-	}
-	v, err := time.ParseDuration(s)
-	if err != nil {
-		return fmt.Errorf("invalid duration %q: %w", s, err)
-	}
-	*d = Duration(v)
+	*d = Duration(time.Duration(secs) * time.Second)
 	return nil
 }
 
 func (d Duration) MarshalJSON() ([]byte, error) {
-	return json.Marshal(time.Duration(d).String())
+	return json.Marshal(int64(time.Duration(d) / time.Second))
 }
 
 // TimeoutsConfig holds upstream (backend-facing) timeouts. Request is the whole
@@ -74,12 +67,26 @@ type ServerConfig struct {
 }
 
 // OverflowConfig controls what happens when a max_connections cap is reached.
-// Strategy is "reject" (default) or "queue"; the reject response is configurable.
+// Strategy is "reject" (default), "queue", or "reroute"; the reject response is
+// configurable (status, headers, and a body that may contain $variables).
 type OverflowConfig struct {
-	Strategy     string    `json:"strategy"`
-	QueueTimeout *Duration `json:"queue_timeout"`
-	Status       *int      `json:"status"`
-	Body         *string   `json:"body"`
+	Strategy     string            `json:"strategy"`
+	QueueTimeout *Duration         `json:"queue_timeout"`
+	Status       *int              `json:"status"`
+	Headers      map[string]string `json:"headers"`
+	Body         *string           `json:"body"`
+}
+
+// ResponseConfig describes a Switchyard-generated HTTP response: a status code,
+// a set of headers, and a body. Header values and the body may contain
+// $variables (see vars.go), so responses can embed request data or the current
+// time. It backs the "response" location type and the built-in error responses
+// (backend_error, not_found), each of which supplies its own defaults when a
+// field is left unset.
+type ResponseConfig struct {
+	Status  *int              `json:"status"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
 }
 
 // Config is Switchyard's external configuration, loaded from a JSON file.
@@ -107,20 +114,27 @@ type Config struct {
 	Server *ServerConfig `json:"server"`
 	// Overflow controls behavior when a max_connections cap is hit.
 	Overflow *OverflowConfig `json:"overflow"`
+	// BackendError / NotFound override Switchyard's built-in error responses
+	// (502 when an upstream is unreachable or a pool is empty; 404 when no
+	// location matched). When nil, sensible defaults are used. See response.go.
+	BackendError *ResponseConfig `json:"backend_error"`
+	NotFound     *ResponseConfig `json:"not_found"`
 }
 
 // LocationConfig describes one location block. Path is matched as a prefix
 // (the default) or as a Go regexp when Regex is true. Type selects the
 // behavior: "proxy" (default) forwards to one of the Backends (referenced by
-// id), "static" serves files from Root. Logging and SetHeaders are optional and
-// stack with the global ones rather than replacing them.
+// id), "static" serves files from Root, "response" returns the canned Response.
+// Logging and SetHeaders are optional and stack with the global ones rather than
+// replacing them.
 type LocationConfig struct {
 	Path        string            `json:"path"`
 	Regex       bool              `json:"regex"`
-	Type        string            `json:"type"`         // "proxy" (default) or "static"
+	Type        string            `json:"type"`         // "proxy" (default), "static", or "response"
 	Backends    []string          `json:"backends"`     // backend ids, for type "proxy"
 	Root        string            `json:"root"`         // directory, for type "static"
 	StripPrefix *string           `json:"strip_prefix"` // nil distinguishes unset from ""
+	Response    *ResponseConfig   `json:"response"`     // generated response, for type "response"
 	Logging     *LogConfig        `json:"logging"`
 	SetHeaders  map[string]string `json:"set_headers"`
 	// MaxConnections caps concurrent in-flight requests routed through this
@@ -279,6 +293,12 @@ func (c Config) validate() error {
 	if err := checkOverflow(c.Overflow); err != nil {
 		return err
 	}
+	if err := checkResponse("backend_error", c.BackendError); err != nil {
+		return err
+	}
+	if err := checkResponse("not_found", c.NotFound); err != nil {
+		return err
+	}
 	for _, bc := range c.Backends {
 		who := "backend " + bc.URL
 		if err := checkNonNegInt(who+" max_connections", bc.MaxConnections); err != nil {
@@ -295,6 +315,22 @@ func (c Config) validate() error {
 		if err := checkNonNegInt("location "+lc.Path+" max_connections", lc.MaxConnections); err != nil {
 			return err
 		}
+		if err := checkResponse("location "+lc.Path+" response", lc.Response); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkResponse validates a generated-response config's status range. Body and
+// header templates are compiled (and their $variables validated) in New via
+// newResponder, so only the numeric range is checked here.
+func checkResponse(name string, r *ResponseConfig) error {
+	if r == nil || r.Status == nil {
+		return nil
+	}
+	if *r.Status < 100 || *r.Status > 599 {
+		return fmt.Errorf("%s.status %d out of range (100-599)", name, *r.Status)
 	}
 	return nil
 }

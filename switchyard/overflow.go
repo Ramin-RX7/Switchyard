@@ -2,6 +2,7 @@ package switchyard
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -12,12 +13,12 @@ import (
 //   - "reroute": at the backend step, try other backends in the pool; if all
 //     are full, fall back to the queue/reject behavior (waiting queueWait when set).
 //
-// The reject response (status + body) is configurable.
+// The reject response is produced by a ResponseGenerator (resp), so it carries a
+// configurable status, headers, and a body that may contain $variables.
 type overflowPolicy struct {
 	strategy  string
 	queueWait time.Duration
-	status    int
-	body      string
+	resp      *TemplateResponder
 }
 
 // fallbackWait is how long to block for a slot when none is immediately free
@@ -32,8 +33,9 @@ func (o overflowPolicy) fallbackWait() time.Duration {
 // reroutes reports whether a full backend should try other pool members first.
 func (o overflowPolicy) reroutes() bool { return o.strategy == "reroute" }
 
-func (c Config) overflowPolicy() overflowPolicy {
-	o := overflowPolicy{strategy: "reject", status: defaultOverflowStatus, body: defaultOverflowBody}
+func (c Config) overflowPolicy() (overflowPolicy, error) {
+	o := overflowPolicy{strategy: "reject"}
+	var rc ResponseConfig
 	if c.Overflow != nil {
 		if c.Overflow.Strategy != "" {
 			o.strategy = c.Overflow.Strategy
@@ -41,14 +43,18 @@ func (c Config) overflowPolicy() overflowPolicy {
 		if c.Overflow.QueueTimeout != nil {
 			o.queueWait = c.Overflow.QueueTimeout.std()
 		}
-		if c.Overflow.Status != nil {
-			o.status = *c.Overflow.Status
-		}
+		rc.Status = c.Overflow.Status
+		rc.Headers = c.Overflow.Headers
 		if c.Overflow.Body != nil {
-			o.body = *c.Overflow.Body
+			rc.Body = *c.Overflow.Body
 		}
 	}
-	return o
+	resp, err := newResponder(rc, defaultOverflowStatus, defaultOverflowBody)
+	if err != nil {
+		return overflowPolicy{}, fmt.Errorf("overflow: %w", err)
+	}
+	o.resp = resp
+	return o, nil
 }
 
 // acquire takes a slot on l, blocking up to the policy's fallback wait (0 for
@@ -59,6 +65,6 @@ func (o overflowPolicy) acquire(ctx context.Context, l *limiter) bool {
 }
 
 // reject writes the configured over-capacity response to the client.
-func (o overflowPolicy) reject(w http.ResponseWriter) {
-	http.Error(w, o.body, o.status)
+func (o overflowPolicy) reject(w http.ResponseWriter, r *http.Request, req Request) {
+	o.resp.Generate(w, r, req)
 }

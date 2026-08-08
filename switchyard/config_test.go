@@ -2,6 +2,7 @@ package switchyard
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -13,14 +14,17 @@ func TestDurationUnmarshal(t *testing.T) {
 	var s struct {
 		D Duration `json:"d"`
 	}
-	if err := json.Unmarshal([]byte(`{"d":"30s"}`), &s); err != nil || s.D.std() != 30*time.Second {
-		t.Errorf("parse 30s = (%v, %v), want 30s", s.D.std(), err)
+	if err := json.Unmarshal([]byte(`{"d":30}`), &s); err != nil || s.D.std() != 30*time.Second {
+		t.Errorf("parse 30 = (%v, %v), want 30s", s.D.std(), err)
 	}
-	if err := json.Unmarshal([]byte(`{"d":""}`), &s); err != nil || s.D.std() != 0 {
-		t.Errorf("empty duration should parse to 0, got (%v, %v)", s.D.std(), err)
+	if err := json.Unmarshal([]byte(`{"d":0}`), &s); err != nil || s.D.std() != 0 {
+		t.Errorf("0 duration should parse to 0, got (%v, %v)", s.D.std(), err)
 	}
-	if err := json.Unmarshal([]byte(`{"d":"nope"}`), &s); err == nil {
-		t.Error("invalid duration should fail to parse")
+	if err := json.Unmarshal([]byte(`{"d":"30s"}`), &s); err == nil {
+		t.Error("a duration string should be rejected now (integer seconds only)")
+	}
+	if err := json.Unmarshal([]byte(`{"d":2.5}`), &s); err == nil {
+		t.Error("a fractional-second duration should be rejected")
 	}
 }
 
@@ -76,15 +80,36 @@ func TestServerTimeoutDefaults(t *testing.T) {
 }
 
 func TestOverflowPolicyDefaults(t *testing.T) {
-	o := Config{}.overflowPolicy()
-	if o.strategy != "reject" || o.status != defaultOverflowStatus || o.body != defaultOverflowBody {
-		t.Errorf("overflow defaults = %+v", o)
+	o, err := Config{}.overflowPolicy()
+	if err != nil {
+		t.Fatal(err)
 	}
+	if o.strategy != "reject" {
+		t.Errorf("overflow default strategy = %q, want reject", o.strategy)
+	}
+	if st, body := renderResponder(o.resp); st != defaultOverflowStatus || body != defaultOverflowBody {
+		t.Errorf("overflow default response = %d %q, want %d %q", st, body, defaultOverflowStatus, defaultOverflowBody)
+	}
+
 	cfg := Config{Overflow: &OverflowConfig{Strategy: "queue", QueueTimeout: dptr(2 * time.Second), Status: iptr(429), Body: strptr("busy")}}
-	o = cfg.overflowPolicy()
-	if o.strategy != "queue" || o.queueWait != 2*time.Second || o.status != 429 || o.body != "busy" {
+	o, err = cfg.overflowPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.strategy != "queue" || o.queueWait != 2*time.Second {
 		t.Errorf("overflow config = %+v", o)
 	}
+	if st, body := renderResponder(o.resp); st != 429 || body != "busy" {
+		t.Errorf("overflow response = %d %q, want 429 busy", st, body)
+	}
+}
+
+// renderResponder runs a TemplateResponder against a recorder and returns the
+// written status and body, for asserting on generated responses.
+func renderResponder(r *TemplateResponder) (int, string) {
+	rec := httptest.NewRecorder()
+	r.Generate(rec, httptest.NewRequest("GET", "/", nil), Request{})
+	return rec.Code, rec.Body.String()
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -95,6 +120,9 @@ func TestConfigValidate(t *testing.T) {
 		{Overflow: &OverflowConfig{Strategy: "nope"}},
 		{Overflow: &OverflowConfig{Status: iptr(99)}},
 		{Backends: []BackendConfig{{URL: "http://x", MaxConnections: iptr(-2)}}},
+		{BackendError: &ResponseConfig{Status: iptr(99)}},
+		{NotFound: &ResponseConfig{Status: iptr(700)}},
+		{Locations: []LocationConfig{{Path: "/", Response: &ResponseConfig{Status: iptr(42)}}}},
 	}
 	for i, c := range bad {
 		if err := c.validate(); err == nil {

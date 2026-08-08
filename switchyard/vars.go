@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Request variables, modelled on nginx's variable set. They are computed from
@@ -20,6 +22,8 @@ import (
 //	uri             path without query, e.g. /v1/users
 //	args            raw query string
 //	query_string    alias for args
+//	time_iso8601    request-receipt time, RFC 3339 (e.g. 2006-01-02T15:04:05Z07:00)
+//	time_unix       request-receipt time, Unix seconds
 //	http_<name>     a request header, e.g. http_origin -> Origin,
 //	                http_user_agent -> User-Agent
 
@@ -46,6 +50,10 @@ func requestVar(req Request, name string) (string, bool) {
 		return req.Path, true
 	case "args", "query_string":
 		return req.RawQuery, true
+	case "time_iso8601":
+		return req.ReceivedAt.Format(time.RFC3339), true
+	case "time_unix":
+		return strconv.FormatInt(req.ReceivedAt.Unix(), 10), true
 	}
 	if h, ok := headerVar(name); ok {
 		return req.Header.Get(h), true
@@ -57,7 +65,8 @@ func requestVar(req Request, name string) (string, bool) {
 func knownVar(name string) bool {
 	switch name {
 	case "remote_addr", "remote_port", "host", "scheme",
-		"request_method", "request_uri", "uri", "args", "query_string":
+		"request_method", "request_uri", "uri", "args", "query_string",
+		"time_iso8601", "time_unix":
 		return true
 	}
 	_, ok := headerVar(name)

@@ -4,8 +4,10 @@ Variables are nginx-style `$name` placeholders that resolve to values derived fr
 
 - [`set_headers`](set-headers.md) value templates — e.g. `"X-Real-IP": "$remote_addr"`
 - [Log format](logging.md) strings via the `{var.NAME}` field — e.g. `{var.remote_addr}`
+- [`response` location](routing.md) bodies and headers — e.g. `"body": "{\"time\":\"$time_iso8601\"}"`
+- The `backend_error`, `not_found`, and `overflow` [response](config-reference.md#response) bodies and headers
 
-All variables are resolved against the [request snapshot](concepts.md#request-snapshot) captured at the start of the request, before any forwarding or header mutation. Changes made by `set_headers` do not affect variable resolution.
+All variables are resolved against the [request snapshot](concepts.md#request-snapshot) captured at the start of the request, before any forwarding or header mutation. Changes made by `set_headers` do not affect variable resolution. The `time_iso8601` and `time_unix` variables resolve from the snapshot's receipt time.
 
 ---
 
@@ -22,6 +24,8 @@ All variables are resolved against the [request snapshot](concepts.md#request-sn
 | `uri` | Path only, no query string | `/v1/users` |
 | `args` | Raw query string (alias for `query_string`) | `id=1&sort=asc` |
 | `query_string` | Raw query string (alias for `args`) | `id=1&sort=asc` |
+| `time_iso8601` | Request-receipt time, RFC 3339 | `2026-01-02T15:04:05Z07:00` |
+| `time_unix` | Request-receipt time, Unix seconds | `1735830245` |
 | `http_<name>` | Value of any request header | see below |
 
 ### `http_<name>` — Arbitrary Request Headers
@@ -67,6 +71,13 @@ Variable names are validated when the configuration is compiled. Any unknown var
 
 ---
 
-## Where Variables Cannot Be Used
+## Where Variables Can and Cannot Be Used
 
-Variables are only available in `set_headers` value templates and in the `{var.NAME}` placeholder in log format strings. They cannot be used in `path`, `root`, `listen`, or other configuration fields.
+Variables are available in:
+
+- `set_headers` value templates
+- the `{var.NAME}` placeholder in log format strings
+- `response` location bodies and headers
+- the `backend_error`, `not_found`, and `overflow` response bodies and headers
+
+They cannot be used in `path`, `root`, `listen`, or other configuration fields.

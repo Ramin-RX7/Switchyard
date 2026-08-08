@@ -10,18 +10,19 @@ A configured upstream server that Switchyard can forward requests to. Each backe
 
 ## Location
 
-A path-based routing block, similar to nginx's `location` directive. Locations are defined in an ordered list; the first one whose `path` matches the incoming request URI wins. A location can forward to a private pool of backends (`type: "proxy"`) or serve files from disk (`type: "static"`). When no locations are configured, all requests use global round-robin over all backends. See [routing.md](routing.md).
+A path-based routing block, similar to nginx's `location` directive. Locations are defined in an ordered list; the first one whose `path` matches the incoming request URI wins. A location can forward to a private pool of backends (`type: "proxy"`), serve files from disk (`type: "static"`), or return a Switchyard-generated canned response (`type: "response"`). When no locations are configured, all requests use global round-robin over all backends. See [routing.md](routing.md).
 
 ## Decision
 
-The output of Switchyard's passive routing stage. A `Decision` records what should happen to a request — which action to take (`forward`, `static`, or `reject`), which backend was selected, and which location matched — without actually doing anything. No network I/O happens during decision-making. See [architecture.md](architecture.md).
+The output of Switchyard's passive routing stage. A `Decision` records what should happen to a request — which action to take (`forward`, `static`, `respond`, or `reject`), which backend was selected, and which location matched — without actually doing anything. No network I/O happens during decision-making. See [architecture.md](architecture.md).
 
 ## Action
 
-One of three values that a `Decision` can carry:
+One of four values that a `Decision` can carry:
 
 - **`forward`** — proxy the request to a backend
 - **`static`** — serve a file from disk
+- **`respond`** — return a Switchyard-generated response (a `type: "response"` location — see [Response Generator](#response-generator))
 - **`reject`** — return an HTTP error to the client (404 when no location matched, 502 when a proxy location has no backends)
 
 ## Request Snapshot
@@ -35,6 +36,10 @@ An nginx-style `$name` placeholder that resolves to a value derived from the req
 ## Template
 
 A string that contains one or more variable references. Templates support two syntaxes: `$name` and `${name}`. They are compiled once at startup; an unknown variable name causes Switchyard to exit immediately rather than producing silently wrong output at runtime. Templates are used in `set_headers` values.
+
+## Response Generator
+
+The abstract stage that produces Switchyard's *own* HTTP responses — a status, a set of headers, and a body, with `$variable` substitution applied to the headers and body. It backs the `type: "response"` location and the built-in error responses (502 backend-unavailable, 404 no-match) as well as the `overflow` reject response. Each of these is overridable: via config (`response`, `backend_error`, `not_found`, `overflow`) and, for SDK users, by replacing the generator (`loc.Responder`, `p.BadGateway`, `p.NotFound`). See [config-reference.md#response](config-reference.md#response).
 
 ## Round-Robin
 
@@ -55,7 +60,7 @@ A cap on the number of **concurrent in-flight requests** to a scope, enforced by
 
 ## Overflow
 
-What happens when a `max_connections` cap is reached. The `overflow` policy chooses `reject` (fail immediately), `queue` (wait a bounded time for a slot, then reject), or `reroute` (when a backend is full, try the other backends in the pool before falling back to queue/reject). It also configures the reject response (`status`, `body`), and governs every scope's cap, including the project-wide one. See [config-reference.md](config-reference.md#overflow).
+What happens when a `max_connections` cap is reached. The `overflow` policy chooses `reject` (fail immediately), `queue` (wait a bounded time for a slot, then reject), or `reroute` (when a backend is full, try the other backends in the pool before falling back to queue/reject). It also configures the reject response (`status`, `headers`, `body` — the body and header values may contain [variables](variables.md)), and governs every scope's cap, including the project-wide one. See [config-reference.md](config-reference.md#overflow).
 
 ## Fail-Fast
 

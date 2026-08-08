@@ -9,6 +9,7 @@ type Action string
 const (
 	ActionForward Action = "forward"
 	ActionStatic  Action = "static"
+	ActionRespond Action = "respond"
 	ActionReject  Action = "reject"
 )
 

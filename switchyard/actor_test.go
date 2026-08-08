@@ -22,16 +22,28 @@ func TestActorForwardReachesBackend(t *testing.T) {
 	}
 }
 
-func TestActorRejectWritesReasonAndStatus(t *testing.T) {
+func TestActorRejectUsesErrorResponders(t *testing.T) {
 	p, _, _ := twoBackendProxy(t)
-	rec := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "http://x/", nil)
-	p.Actor.Act(rec, r, sw.Request{}, sw.Decision{Action: sw.ActionReject, Reason: "boom", Status: http.StatusServiceUnavailable})
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", rec.Code)
+
+	// A 404 reject routes through the not-found responder.
+	rec := httptest.NewRecorder()
+	p.Actor.Act(rec, r, sw.Request{}, sw.Decision{Action: sw.ActionReject, Reason: "no matching location", Status: http.StatusNotFound})
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "switchyard: boom") {
-		t.Errorf("body = %q, want it to contain 'switchyard: boom'", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "no matching location") {
+		t.Errorf("body = %q, want not-found default", rec.Body.String())
+	}
+
+	// Any other reject routes through the bad-gateway responder (default 502).
+	rec = httptest.NewRecorder()
+	p.Actor.Act(rec, r, sw.Request{}, sw.Decision{Action: sw.ActionReject, Reason: "empty pool", Status: http.StatusBadGateway})
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "backend unavailable") {
+		t.Errorf("body = %q, want bad-gateway default", rec.Body.String())
 	}
 }
 

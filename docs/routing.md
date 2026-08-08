@@ -2,7 +2,7 @@
 
 ## Overview
 
-When `locations` are configured in `switchyard.json`, Switchyard routes each request by matching its path against the location list from top to bottom. The first matching location handles the request. If no location matches, Switchyard returns **404**.
+When `locations` are configured in `switchyard.json`, Switchyard routes each request by matching its path against the location list from top to bottom. The first matching location handles the request. If no location matches, Switchyard returns **404** — produced by the configurable [`not_found`](config-reference.md#response) responder (with a sensible default).
 
 When no `locations` are configured, all requests are distributed round-robin across all backends (global pool).
 
@@ -44,7 +44,7 @@ Forwards the request to one backend from the location's own backend pool.
 - `backends` is a list of backend IDs from the global `backends` registry.
 - Each location maintains its own independent round-robin counter over its pool. Two locations sharing a backend rotate independently.
 - An empty `backends` list is rejected at startup.
-- A matched proxy location with no reachable backend returns **502**.
+- A matched proxy location with no reachable backend returns **502** — produced by the configurable [`backend_error`](config-reference.md#response) responder (with a sensible default).
 
 See [backends.md](backends.md) for how round-robin selection works.
 
@@ -62,6 +62,30 @@ Serves files from a local directory using Go's `http.FileServer`.
 
 - `root` specifies the directory to serve from. The directory must exist at startup.
 - `http.FileServer` handles content-type detection, `If-Modified-Since`, range requests, and path-traversal protection automatically.
+
+### `type: "response"`
+
+Returns a Switchyard-generated canned response — status, headers, and body — without proxying or touching disk. Useful for health checks, canned status endpoints, and maintenance pages.
+
+```json
+{
+    "path": "/health",
+    "type": "response",
+    "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "body": "{\"status\":\"ok\",\"time\":\"$time_iso8601\"}"
+    }
+}
+```
+
+The `response` block is a [Response](config-reference.md#response) with:
+
+- `status` — HTTP status code (default `200` for a location).
+- `headers` — response headers; values may contain [variables](variables.md).
+- `body` — response body; may contain [variables](variables.md).
+
+If no `Content-Type` header is set, Switchyard defaults it to `text/plain; charset=utf-8`.
 
 ---
 
@@ -113,7 +137,7 @@ For regex locations, `strip_prefix` is not set automatically and defaults to no 
 
 ## No-Match Behavior
 
-When no location matches the request path, Switchyard returns **404 Not Found**. This is the only path that produces a 404 from the routing stage.
+When no location matches the request path, Switchyard returns **404 Not Found**. This is the only path that produces a 404 from the routing stage. The 404 response is produced by the configurable [`not_found`](config-reference.md#response) responder (default body `switchyard: no matching location`); an unreachable/empty proxy pool produces a 502 via the [`backend_error`](config-reference.md#response) responder. Both can be overridden — see [config-reference.md#response](config-reference.md#response).
 
 ---
 

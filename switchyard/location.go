@@ -2,27 +2,31 @@ package switchyard
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
 )
 
 // LocationKind selects a location's behavior: forward to a backend pool
-// ("proxy") or serve files from a directory ("static").
+// ("proxy"), serve files from a directory ("static"), or return a
+// Switchyard-generated response ("response").
 type LocationKind string
 
 const (
-	KindProxy  LocationKind = "proxy"
-	KindStatic LocationKind = "static"
+	KindProxy   LocationKind = "proxy"
+	KindStatic  LocationKind = "static"
+	KindRespond LocationKind = "response"
 )
 
 // Location is one compiled entry in the ordered locations list. Matching is
 // first-match-wins in slice order. A "proxy" location selects from its own pool
 // of backends via its own Selector; a "static" location serves files from a
-// directory. Logging and headers, when set, stack on top of the global ones.
+// directory; a "response" location returns a Switchyard-generated response.
+// Logging and headers, when set, stack on top of the global ones.
 //
-// The exported fields (Kind, Pool, Selector, Static, Logger, Headers) are
-// overridable by SDK users after New — e.g. assign a custom Selector to change
+// The exported fields (Kind, Pool, Selector, Static, Responder, Logger, Headers)
+// are overridable by SDK users after New — e.g. assign a custom Selector to change
 // this location's load balancing without touching the rest of its configuration.
 //
 // A Location must not be copied after construction: its Selector may hold an
@@ -41,6 +45,9 @@ type Location struct {
 
 	// static
 	Static StaticServer // serves files; nil unless Kind == KindStatic
+
+	// response
+	Responder ResponseGenerator // generates a response; nil unless Kind == KindRespond
 
 	// stacking features (nil = none for this location)
 	Logger  Logger
@@ -129,8 +136,20 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*Backend) ([]*Locat
 				stripPrefix = c.Path
 			}
 			loc.Static = newFileServer(c.Root, stripPrefix)
+		case KindRespond:
+			if len(c.Backends) > 0 || c.Root != "" || c.StripPrefix != nil {
+				return nil, fmt.Errorf("location %q: backends/root/strip_prefix are not valid for type \"response\"", c.Path)
+			}
+			if c.Response == nil {
+				return nil, fmt.Errorf("location %q: response location requires a \"response\" block", c.Path)
+			}
+			resp, err := newResponder(*c.Response, http.StatusOK, "")
+			if err != nil {
+				return nil, fmt.Errorf("location %q: %w", c.Path, err)
+			}
+			loc.Responder = resp
 		default:
-			return nil, fmt.Errorf("location %q: unknown type %q (want \"proxy\" or \"static\")", c.Path, kind)
+			return nil, fmt.Errorf("location %q: unknown type %q (want \"proxy\", \"static\", or \"response\")", c.Path, kind)
 		}
 		loc.Kind = kind
 		loc.lim = newLimiter(ptrInt(c.MaxConnections, 0))

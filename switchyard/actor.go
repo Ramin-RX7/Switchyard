@@ -20,6 +20,11 @@ type Actor interface {
 type actorEnv interface {
 	applyStackedHeaders(req Request, r *http.Request, loc *Location)
 	forwardPool(d Decision) []*Backend
+	// notFoundResponder / badGatewayResponder are the generators for routing
+	// rejects (404 no-match; 502 empty pool / no backend). Read live so SDK
+	// overrides of p.NotFound / p.BadGateway take effect.
+	notFoundResponder() ResponseGenerator
+	badGatewayResponder() ResponseGenerator
 }
 
 // DefaultActor is the built-in Actor. On a forward it enforces the location and
@@ -43,13 +48,13 @@ func (a *DefaultActor) Act(w http.ResponseWriter, r *http.Request, req Request, 
 			loc = d.Location.lim
 		}
 		if !a.overflow.acquire(r.Context(), loc) {
-			a.overflow.reject(w)
+			a.overflow.reject(w, r, req)
 			return
 		}
 		b := a.chooseBackend(r.Context(), d)
 		if b == nil {
 			loc.release()
-			a.overflow.reject(w)
+			a.overflow.reject(w, r, req)
 			return
 		}
 		defer func() {
@@ -72,12 +77,23 @@ func (a *DefaultActor) Act(w http.ResponseWriter, r *http.Request, req Request, 
 	case ActionStatic:
 		a.env.applyStackedHeaders(req, r, d.Location)
 		d.Location.Static.Serve(w, r, req)
+	case ActionRespond:
+		// A generated response: no upstream, so set_headers (which mutates the
+		// forwarded request) does not apply — the response's own headers come
+		// from its configured response block.
+		d.Location.Responder.Generate(w, r, req)
 	default: // ActionReject (routing decision, not capacity)
-		status := d.Status
-		if status == 0 {
-			status = http.StatusBadGateway
+		// Built-in scenarios flow through the configurable error responders:
+		// 404 for no-match; 502 (or unset) for empty pool / no backend. A custom
+		// Decider that chooses any other status has it honored directly.
+		switch d.Status {
+		case http.StatusNotFound:
+			a.env.notFoundResponder().Generate(w, r, req)
+		case 0, http.StatusBadGateway:
+			a.env.badGatewayResponder().Generate(w, r, req)
+		default:
+			http.Error(w, "switchyard: "+d.Reason, d.Status)
 		}
-		http.Error(w, "switchyard: "+d.Reason, status)
 	}
 }
 

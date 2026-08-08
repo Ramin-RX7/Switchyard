@@ -2,7 +2,6 @@ package switchyard
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -76,13 +75,9 @@ func buildBackends(cfg Config) ([]*Backend, error) {
 			lim:            newLimiter(s.maxConns),
 			requestTimeout: s.requestTimeout,
 		}
-		// Handle backend failures (unreachable host, reset connection, etc.)
-		// explicitly: log them in Switchyard's format and return a consistent
-		// 502 instead of relying on the default handler.
-		b.proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("switchyard: backend %s failed: %v", b.URL, err)
-			http.Error(w, "switchyard: backend unavailable", http.StatusBadGateway)
-		}
+		// The ErrorHandler for backend failures (unreachable host, reset
+		// connection, etc.) is installed by New once the Proxy exists, so it can
+		// route through the configurable p.BadGateway responder.
 		backends = append(backends, b)
 	}
 	return backends, nil

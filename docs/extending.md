@@ -202,3 +202,47 @@ p.Headers = &withRequestID{TemplateHeaderSetter: base}
 mux := http.NewServeMux()
 mux.Handle("/", p.Handler())
 ```
+
+---
+
+## Concurrency & tuning
+
+Go's `net/http` serves every request in its own goroutine, so Switchyard is concurrent by default. A few knobs and rules matter under load:
+
+- **Immutability contract.** Configure the `Proxy`/`Location` fields *before* serving. Once `ListenAndServe`/`Handler` is serving, treat the `Proxy` as read-only — mutating a field concurrently with live requests is a data race. (The only field written during requests is the round-robin counter, which is atomic.)
+
+- **Transport (connection pooling & timeouts).** Most tuning is configurable in JSON per project/backend — idle-pool limits, TLS-handshake and overall request timeouts, keep-alive (see [config-reference.md](config-reference.md#connection-limits--timeouts)). `New` builds each backend its own tuned transport. To force one custom `http.RoundTripper` for **all** backends from Go, set the global override before serving:
+
+  ```go
+  p.Transport = &http.Transport{ /* custom TLS, dial, proxy, … */ } // nil = per-backend transports
+  ```
+
+  The override late-binds (the shim reads `p.Transport` per request) and timing/status logging still works through it.
+
+- **Connection caps & backpressure.** `max_connections` at the project, location, and backend scopes cap concurrent in-flight requests (independent, nested). The project cap is `Proxy.MaxInFlight`; over-capacity behavior (reject/queue + response) is the `overflow` config. From Go:
+
+  ```go
+  p.MaxInFlight = 500 // 0 = unlimited (default); or set config's max_connections
+  ```
+
+- **Capacity-aware selection.** A custom `BackendSelector` can distribute by load using each backend's live capacity (the default round-robin ignores it). This is the runnable [`examples/least-loaded`](../examples/least-loaded/main.go):
+
+  ```go
+  func (s *leastLoaded) Select(pool []*sw.Backend, _ sw.Request) *sw.Backend {
+      best := pool[0]
+      for _, b := range pool[1:] {
+          // prefer the backend with the most spare capacity
+          if spare(b) > spare(best) { best = b }
+      }
+      return best
+  }
+  // spare(b) = b.MaxConns() - b.InFlight(); treat MaxConns()==0 as unlimited.
+  ```
+
+  This differs from `overflow: reroute`: capacity-aware *selection* picks a good backend up front on every request; `reroute` only kicks in *after* the chosen backend is found full. They compose.
+
+- **Custom over-capacity response.** Beyond the `overflow` status/body config, an SDK user can override the `Actor` for full control (custom body, headers, metrics) when a cap is hit.
+
+- **Graceful shutdown.** `ListenAndServe` traps `SIGINT`/`SIGTERM`, stops accepting new connections, and drains in-flight requests (15s deadline) before returning `nil`. If you use `Handler()` in your own server, call `srv.Shutdown(ctx)` yourself.
+
+Verify concurrency safety with `make race` (`go test -race ./...`); the suite includes a hundreds-of-parallel-requests test and the connection-cap behaviors.

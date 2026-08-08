@@ -45,6 +45,8 @@ type Location struct {
 	// stacking features (nil = none for this location)
 	Logger  Logger
 	Headers HeaderApplier
+
+	lim *limiter // concurrency cap for this location (nil = unlimited)
 }
 
 // Path returns the location's configured path (the prefix or regex source), for
@@ -131,6 +133,7 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*Backend) ([]*Locat
 			return nil, fmt.Errorf("location %q: unknown type %q (want \"proxy\" or \"static\")", c.Path, kind)
 		}
 		loc.Kind = kind
+		loc.lim = newLimiter(ptrInt(c.MaxConnections, 0))
 
 		if c.Logging != nil {
 			l, err := newLogger(*c.Logging)

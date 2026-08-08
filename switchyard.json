@@ -1,30 +1,61 @@
 {
     "listen": ":8091",
+
+    "max_connections": 500,
+    "timeouts": {
+        "request": "30s",
+        "tls_handshake": "5s"
+    },
+    "transport": {
+        "max_idle_conns": 512,
+        "max_idle_conns_per_host": 128,
+        "idle_conn_timeout": "90s"
+    },
+    "server": {
+        "read_header_timeout": "10s",
+        "idle_timeout": "60s"
+    },
+    "overflow": {
+        "strategy": "reroute",
+        "queue_timeout": "2s",
+        "status": 503,
+        "body": "switchyard: capacity reached, retry shortly"
+    },
+
     "backends": [
         {
             "id": "api1",
-            "url": "http://127.0.0.1:9001"
+            "url": "http://127.0.0.1:9001",
+            "max_connections": 100
         },
         {
             "id": "api2",
-            "url": "http://127.0.0.1:9002"
+            "url": "http://127.0.0.1:9002",
+            "max_connections": 100,
+            "timeouts": {
+                "request": "10s"
+            }
         },
         {
             "id": "frontend",
-            "url": "http://127.0.0.1:9003"
+            "url": "http://127.0.0.1:9003",
+            "disable_keep_alive": true
         }
     ],
+
     "set_headers": {
         "X-Real-IP": "$remote_addr",
         "X-Forwarded-Proto": "$scheme",
         "X-Forwarded-Host": "$host"
     },
+
     "logging": {
         "outputs": [
             "console"
         ],
         "format": "{receive_time} {method} {path} backend={backend_id} status={status} dur={request_duration}"
     },
+
     "locations": [
         {
             "path": "/api/",
@@ -32,6 +63,7 @@
                 "api1",
                 "api2"
             ],
+            "max_connections": 150,
             "set_headers": {
                 "X-Route": "api"
             },

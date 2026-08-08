@@ -353,27 +353,8 @@ type contextKey int
 
 const recordKey contextKey = iota
 
-// loggingTransport records when a request is sent to the backend, when the
-// response returns, and the backend's status code, into the LogRecord carried
-// on the request context.
-type loggingTransport struct {
-	base http.RoundTripper
-}
-
-func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	rec, _ := r.Context().Value(recordKey).(*LogRecord)
-	if rec != nil {
-		rec.ForwardTime = time.Now()
-	}
-	resp, err := t.base.RoundTrip(r)
-	if rec != nil {
-		rec.AppRespTime = time.Now()
-		if resp != nil {
-			rec.AppStatus = resp.StatusCode
-		}
-	}
-	return resp, err
-}
+// Backend round-trip timing/status is recorded by proxyTransport (see
+// transport.go), which reads the LogRecord off this context key.
 
 // statusWriter wraps an http.ResponseWriter to capture the status code sent to
 // the client. It forwards Flush and Hijack so streaming and connection upgrades

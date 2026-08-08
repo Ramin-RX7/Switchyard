@@ -5,6 +5,9 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -23,6 +26,12 @@ const DefaultListen = ":8091"
 //	Selector — backend selection for the global pool when no locations are set
 //	Pool     — the global backend pool (default: StaticPool from config)
 //	Locations — the compiled location blocks; each carries its own pluggable stages
+//	Transport — the shared http.RoundTripper used for all backends (tuned default)
+//	MaxInFlight — optional ceiling on concurrent requests (0 = unlimited)
+//
+// Fields are read live per request, so assign any overrides after New and
+// BEFORE serving. Once ListenAndServe/Handler is serving, treat the Proxy as
+// immutable — mutating a field concurrently with requests is a data race.
 type Proxy struct {
 	Decider   Decider
 	Actor     Actor
@@ -32,6 +41,24 @@ type Proxy struct {
 	Selector  BackendSelector // global-pool selection (used only when no locations)
 	Pool      BackendPool     // global backend pool (used only when no locations)
 	Locations []*Location
+
+	// Transport, when non-nil, is a global override used to reach ALL backends.
+	// By default it is nil: New builds a tuned per-backend transport from config
+	// (idle-pool limits, TLS-handshake timeout, keep-alive). Set this before
+	// serving to force one custom http.RoundTripper for every backend.
+	Transport http.RoundTripper
+
+	// MaxInFlight, when > 0, caps concurrently-served requests project-wide;
+	// excess requests are handled by the overflow policy (reject/queue). It is
+	// set from the config's top-level max_connections. 0 (default) = unlimited.
+	MaxInFlight int
+
+	// resolved config-derived settings (set in New).
+	overflow       overflowPolicy
+	srvReadHeader  time.Duration
+	srvReadTimeout time.Duration
+	srvWriteout    time.Duration
+	srvIdle        time.Duration
 }
 
 // New builds a Proxy from configuration, preparing a reverse proxy for each
@@ -39,6 +66,10 @@ type Proxy struct {
 // returned Proxy reproduces Switchyard's turnkey behavior exactly; SDK users
 // override a stage by reassigning the corresponding field before serving.
 func New(cfg Config) (*Proxy, error) {
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
 	var logger Logger
 	if cfg.Logging != nil {
 		l, err := newLogger(*cfg.Logging)
@@ -57,23 +88,29 @@ func New(cfg Config) (*Proxy, error) {
 		headers = hs
 	}
 
-	// Backend round-trip timing is needed when any logging is configured,
-	// globally or on any location. The transport is a no-op without a LogRecord
-	// on the request context, so installing it on every backend when any logging
-	// exists is cheap and correct even for backends shared across locations.
-	anyLogging := logger != nil
-	for _, lc := range cfg.Locations {
-		if lc.Logging != nil {
-			anyLogging = true
-		}
-	}
-
-	backends, err := buildBackends(cfg.Backends, anyLogging)
+	backends, err := buildBackends(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	p := &Proxy{Logger: logger, Headers: headers, Pool: NewStaticPool(backends), Selector: &RoundRobinSelector{}}
+	rh, rt, wt, it := cfg.serverTimeouts()
+	p := &Proxy{
+		Logger:         logger,
+		Headers:        headers,
+		Pool:           NewStaticPool(backends),
+		Selector:       &RoundRobinSelector{},
+		MaxInFlight:    ptrInt(cfg.MaxConnections, 0),
+		overflow:       cfg.overflowPolicy(),
+		srvReadHeader:  rh,
+		srvReadTimeout: rt,
+		srvWriteout:    wt,
+		srvIdle:        it,
+	}
+	// Install each backend's own transport via the shim (which also records
+	// timing and honors a global Proxy.Transport override at request time).
+	for _, b := range backends {
+		b.proxy.Transport = &proxyTransport{p: p, base: b.transport}
+	}
 
 	if len(cfg.Locations) > 0 {
 		byID := make(map[string]*Backend, len(backends))
@@ -88,7 +125,7 @@ func New(cfg Config) (*Proxy, error) {
 	}
 
 	p.Router = &DefaultRouter{Locations: p.Locations}
-	p.Actor = &DefaultActor{env: p}
+	p.Actor = &DefaultActor{env: p, overflow: p.overflow}
 	p.Decider = &DefaultDecider{env: p}
 	return p, nil
 }
@@ -101,18 +138,49 @@ func (p *Proxy) match(req Request) *Location     { return p.Router.Match(req) }
 func (p *Proxy) globalPool() []*Backend          { return p.Pool.Backends() }
 func (p *Proxy) globalSelector() BackendSelector { return p.Selector }
 
+// forwardPool returns the pool a forward may reroute within: the matched
+// location's pool, or the global pool when no location applied.
+func (p *Proxy) forwardPool(d Decision) []*Backend {
+	if d.Location != nil {
+		return d.Location.Pool.Backends()
+	}
+	return p.Pool.Backends()
+}
+
 // Handler returns an http.Handler that serves the proxy. Use it to mount
-// Switchyard inside an existing server or middleware chain.
+// Switchyard inside an existing server or middleware chain. When MaxInFlight is
+// set, the returned handler enforces the project-wide concurrency ceiling via
+// the overflow policy.
 func (p *Proxy) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", p.handle)
+	if p.MaxInFlight > 0 {
+		return p.globalLimit(mux)
+	}
 	return mux
+}
+
+// globalLimit wraps h with the project-wide in-flight ceiling. On overflow it
+// applies the configured policy (reject immediately, or queue up to the
+// configured wait) and the configured reject status/body.
+func (p *Proxy) globalLimit(h http.Handler) http.Handler {
+	lim := newLimiter(p.MaxInFlight)
+	o := p.overflow
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !o.acquire(r.Context(), lim) {
+			o.reject(w)
+			return
+		}
+		defer lim.release()
+		h.ServeHTTP(w, r)
+	})
 }
 
 // ListenAndServe starts an HTTP server on addr (falling back to DefaultListen
 // when empty) and serves the proxy with defensive header/idle timeouts. Body
 // timeouts are intentionally left unset so slow or large proxied responses are
-// not cut off.
+// not cut off. It shuts down gracefully on SIGINT/SIGTERM, draining in-flight
+// requests (up to a 15s deadline) before returning nil.
 func (p *Proxy) ListenAndServe(addr string) error {
 	if addr == "" {
 		addr = DefaultListen
@@ -120,11 +188,28 @@ func (p *Proxy) ListenAndServe(addr string) error {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           p.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: p.srvReadHeader,
+		ReadTimeout:       p.srvReadTimeout,
+		WriteTimeout:      p.srvWriteout,
+		IdleTimeout:       p.srvIdle,
 	}
+
+	shutdownErr := make(chan error, 1)
+	go func() {
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+		<-sigs
+		log.Printf("switchyard: shutting down, draining in-flight requests…")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		shutdownErr <- srv.Shutdown(ctx)
+	}()
+
 	log.Printf("switchyard: listening on %s, %d backend(s), %d location(s)", addr, len(p.Pool.Backends()), len(p.Locations))
-	return srv.ListenAndServe()
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		return err // failed to bind / unexpected error
+	}
+	return <-shutdownErr // wait for Shutdown to finish draining
 }
 
 // handle is the HTTP entry point: capture the request into the internal form,

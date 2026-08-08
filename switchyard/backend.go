@@ -6,28 +6,41 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"time"
 )
 
 // Backend is a configured upstream that Switchyard can forward requests to.
 // ID and URL are exported so custom BackendSelectors and Loggers can inspect
-// them; proxy is the internal reverse-proxy handler.
+// them. MaxConns/InFlight expose this backend's capacity so a custom selector
+// can distribute by load; proxy/transport/lim are internal.
 type Backend struct {
-	ID    string
-	URL   string
-	proxy *httputil.ReverseProxy
+	ID  string
+	URL string
+
+	proxy          *httputil.ReverseProxy
+	transport      *http.Transport
+	lim            *limiter      // concurrency cap (nil = unlimited)
+	requestTimeout time.Duration // per-request upstream deadline (0 = none)
 }
 
-// buildBackends constructs a reverse proxy for each configured backend,
-// validating that every url includes a scheme and host and that urls and ids
-// are each unique. An unspecified id defaults to the url. When logging is true,
-// each backend's transport is wrapped so per-request round-trip timing and
-// status can be recorded. Validation fails fast so misconfiguration surfaces at
-// startup.
-func buildBackends(cfgs []BackendConfig, logging bool) ([]*Backend, error) {
+// MaxConns is this backend's configured max concurrent in-flight requests
+// (0 = unlimited). Useful for capacity-aware custom BackendSelectors.
+func (b *Backend) MaxConns() int { return b.lim.capacity() }
+
+// InFlight is the number of requests currently being served by this backend.
+func (b *Backend) InFlight() int { return b.lim.count() }
+
+// buildBackends constructs a reverse proxy for each configured backend, merging
+// per-backend settings over the project defaults. It validates that every url
+// includes a scheme and host and that urls and ids are each unique. An
+// unspecified id defaults to the url. Each backend gets its own tuned transport
+// (installed onto the ReverseProxy by New via proxyTransport). Validation fails
+// fast so misconfiguration surfaces at startup.
+func buildBackends(cfg Config) ([]*Backend, error) {
 	var backends []*Backend
 	seenURL := make(map[string]bool)
 	seenID := make(map[string]bool)
-	for _, bc := range cfgs {
+	for _, bc := range cfg.Backends {
 		raw := bc.URL
 		if raw == "" {
 			return nil, fmt.Errorf("backend must include a url")
@@ -54,15 +67,14 @@ func buildBackends(cfgs []BackendConfig, logging bool) ([]*Backend, error) {
 		}
 		seenID[id] = true
 
+		s := cfg.resolveBackend(bc)
 		b := &Backend{
-			ID:    id,
-			URL:   raw,
-			proxy: httputil.NewSingleHostReverseProxy(target),
-		}
-		// When any logging is enabled, wrap the transport so the backend
-		// round-trip timing and status code can be recorded per request.
-		if logging {
-			b.proxy.Transport = &loggingTransport{base: http.DefaultTransport}
+			ID:             id,
+			URL:            raw,
+			proxy:          httputil.NewSingleHostReverseProxy(target),
+			transport:      buildTransport(s),
+			lim:            newLimiter(s.maxConns),
+			requestTimeout: s.requestTimeout,
 		}
 		// Handle backend failures (unreachable host, reset connection, etc.)
 		// explicitly: log them in Switchyard's format and return a consistent

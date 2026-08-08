@@ -49,6 +49,14 @@ The behavior where location-level settings *augment* global settings rather than
 
 Stacking means global configuration is a baseline that every request goes through. Location configuration adds to it for matched requests.
 
+## Connection Limit (`max_connections`)
+
+A cap on the number of **concurrent in-flight requests** to a scope, enforced by a counting semaphore. It can be set independently on the whole project, a location, and a backend; the caps are **nested** — a request must have a free slot at *every* applicable scope to proceed. "Connections" here means concurrent requests (with keep-alive, actual TCP connections may be fewer). A backend's cap and live count are exposed (`Backend.MaxConns`/`InFlight`) so a custom selector can distribute by capacity. See [config-reference.md](config-reference.md#connection-limits--timeouts).
+
+## Overflow
+
+What happens when a `max_connections` cap is reached. The `overflow` policy chooses `reject` (fail immediately), `queue` (wait a bounded time for a slot, then reject), or `reroute` (when a backend is full, try the other backends in the pool before falling back to queue/reject). It also configures the reject response (`status`, `body`), and governs every scope's cap, including the project-wide one. See [config-reference.md](config-reference.md#overflow).
+
 ## Fail-Fast
 
-Switchyard validates the entire configuration at startup before accepting any traffic. If a backend URL is invalid, a regex fails to compile, a static root directory does not exist, a variable name is unknown, or a log format field is misspelled, Switchyard exits immediately with an error. No partial startup, no lazy validation.
+Switchyard validates the entire configuration at startup before accepting any traffic. If a backend URL is invalid, a regex fails to compile, a static root directory does not exist, a variable name is unknown, a log format field is misspelled, a duration is malformed, or a limit is negative, Switchyard exits immediately with an error. No partial startup, no lazy validation.

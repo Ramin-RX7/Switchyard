@@ -2,6 +2,8 @@
 
 Switchyard is configured via a single JSON file (default: `switchyard.json`). Pass a different path with the `-config` flag. All validation is [fail-fast](concepts.md#fail-fast): the process exits on the first error before serving any traffic.
 
+Connection limits and timeouts are configurable at three scopes — project (top-level), per [Backend](#backend), and per [Location](#location) — via the fields below. Durations are Go duration strings (`"30s"`, `"1m500ms"`); `0`/omitted means "no limit". See [Connection limits & timeouts](#connection-limits--timeouts). (These can also be overridden in Go via `Proxy.Transport` / `Proxy.MaxInFlight` — see [extending.md](extending.md#concurrency--tuning).)
+
 ---
 
 ## Top-Level Fields
@@ -13,6 +15,11 @@ Switchyard is configured via a single JSON file (default: `switchyard.json`). Pa
 | `locations` | array of [Location](#location) | — | no |
 | `set_headers` | object (string → string) | — | no |
 | `logging` | [Logging](#logging) | — | no |
+| `max_connections` | int | `0` (unlimited) | no |
+| `timeouts` | [Timeouts](#timeouts) | — | no |
+| `transport` | [Transport](#transport) | — | no |
+| `server` | [Server](#server) | — | no |
+| `overflow` | [Overflow](#overflow) | — | no |
 
 ### `listen`
 
@@ -44,6 +51,12 @@ Defined in the `backends` array.
 |-------|------|---------|----------|
 | `id` | string | value of `url` | no |
 | `url` | string | — | yes |
+| `max_connections` | int | `0` (unlimited) | no |
+| `timeouts` | [Timeouts](#timeouts) | project value | no |
+| `transport` | [Transport](#transport) | project value | no |
+| `disable_keep_alive` | bool | `false` | no |
+
+The last four override the project defaults for this backend; see [Connection limits & timeouts](#connection-limits--timeouts).
 
 ### `id`
 
@@ -78,6 +91,7 @@ Defined in the `locations` array.
 | `strip_prefix` | string | `path` (non-regex only) | no |
 | `set_headers` | object (string → string) | — | no |
 | `logging` | [Logging](#logging) | — | no |
+| `max_connections` | int | `0` (unlimited) | no |
 
 ### `path`
 
@@ -118,6 +132,10 @@ Location-specific headers applied to forwarded requests in addition to the globa
 
 A location-specific logger that fires in addition to (not instead of) the global logger. Both loggers receive the same request record and render independently. See [logging.md](logging.md).
 
+### `max_connections`
+
+Caps concurrent in-flight requests routed through this location (`0` = unlimited). Independent of the backend and project caps — see [Connection limits & timeouts](#connection-limits--timeouts).
+
 ---
 
 ## Logging
@@ -146,6 +164,66 @@ Path to the log file. The file is opened in append mode with permissions `0644`.
 ### `format`
 
 The log line template. Uses `{field}` syntax for placeholders. See [logging.md](logging.md) for the full list of available fields. The format is compiled at startup; unknown field names cause an immediate exit.
+
+---
+
+## Connection limits & timeouts
+
+Capacity and timeout controls exist at three scopes. **`max_connections`** (a cap on concurrent in-flight requests) can be set on the **project**, a **location**, and a **backend**; the three are **independent, nested caps** — a request must have room at every applicable scope or it hits the [overflow](#overflow) policy. **Timeouts and transport tuning** are set on the **project** (as defaults) and overridden per **backend**; `server` timeouts are project-only.
+
+`max_connections` defines "connections" as **max concurrent in-flight requests** to that scope (a semaphore); with keep-alive the real TCP-connection count may be lower. Omitting all of these reproduces Switchyard's built-in tuned defaults.
+
+### Timeouts
+
+Upstream (backend-facing) timeouts. Used at project scope (default) and per backend (override).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `request` | duration | `0` (none) | Whole per-request deadline to the backend. `0` = no deadline (streaming-safe). |
+| `tls_handshake` | duration | `10s` | Max TLS handshake time for `https` backends. |
+
+> `request` is a single overall timeout today; it is modelled as an object so it can later split into separate send/receive timeouts without breaking configs.
+
+### Transport
+
+Keep-alive connection-pool tuning. Project scope (default) and per backend (override).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_idle_conns` | int | `512` | Idle keep-alive connections kept across all backends. |
+| `max_idle_conns_per_host` | int | `256` | Idle keep-alive connections kept per backend (stdlib default is 2 — this is the throughput-critical one). |
+| `idle_conn_timeout` | duration | `90s` | How long an idle connection is pooled before closing. |
+
+The per-backend `disable_keep_alive: true` forces a fresh connection per request to that backend.
+
+### Server
+
+Client-facing `http.Server` timeouts. **Project-only** (there is one server accepting client connections).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `read_header_timeout` | duration | `10s` | Max time to read request headers. |
+| `read_timeout` | duration | `0` (off) | Max time to read the whole client request. |
+| `write_timeout` | duration | `0` (off) | Max time to write the response. **Caps total response time — leave `0` for streaming/large responses.** |
+| `idle_timeout` | duration | `60s` | Keep-alive idle timeout for client connections. |
+
+### Overflow
+
+What happens when a `max_connections` cap (any scope) is reached. Project-wide.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `strategy` | string | `"reject"` | `"reject"`, `"queue"`, or `"reroute"` (see below). |
+| `queue_timeout` | duration | `0` | Wait for a free slot before failing (used by `"queue"`, and as `"reroute"`'s all-full fallback). |
+| `status` | int | `503` | HTTP status for the reject response. |
+| `body` | string | `switchyard: capacity reached` | Body for the reject response. |
+
+**Strategies:**
+- `reject` — fail immediately with the reject response.
+- `queue` — wait up to `queue_timeout` for a slot, then reject.
+- `reroute` — when the selected **backend** is full, try the other backends in the matched pool; if all are full, fall back to `queue_timeout` (if set) then reject. (The location and project caps have no alternates, so they use the queue/reject fallback.)
+
+> For full control over the over-capacity response, an SDK user can override the `Actor`; for capacity-aware distribution (rather than reroute-on-overflow), a custom `BackendSelector` can route by `Backend.MaxConns`/`InFlight` — see [extending.md](extending.md#concurrency--tuning) and [`examples/least-loaded`](../examples/least-loaded/main.go).
 
 ---
 

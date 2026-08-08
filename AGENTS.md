@@ -110,4 +110,10 @@ Each step compiles independently and can be reviewed before moving on. Keep deci
 
 ## Testing (required)
 
-Changes to behavior must come with tests. Every stage/feature is tested along three axes: the real request flow works, the default behavior is correct, and a custom user implementation is honored. When you change a stage's logic, update its `*_test.go` accordingly; a new pluggable stage ships with its own `<stage>_test.go` (default + custom-override + an end-to-end assertion). Run `go test ./...` (and `-race`) before finishing. See [`docs/testing.md`](docs/testing.md) for the layout, helpers, and full rule.
+Changes to behavior must come with tests. Every stage/feature is tested along three axes: the real request flow works, the default behavior is correct, and a custom user implementation is honored. When you change a stage's logic, update its `*_test.go` accordingly; a new pluggable stage ships with its own `<stage>_test.go` (default + custom-override + an end-to-end assertion). Run `make ci` (or `go test ./...` + `-race`) before finishing. See [`docs/testing.md`](docs/testing.md) for the layout, helpers, and full rule.
+
+---
+
+## Tooling
+
+Common commands live in the [`Makefile`](Makefile) (`make` lists them). It's a task hub, not the build system — Go's toolchain does the real building. **If you add or change a build/test/lint command, update the `Makefile` (and the command list in `CLAUDE.md` / `docs/testing.md`) so they don't drift.**

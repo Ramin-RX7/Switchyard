@@ -8,15 +8,17 @@ Switchyard's tests live beside the code in [`switchyard/`](../switchyard/) as `*
 
 ## Running
 
+The [Makefile](../Makefile) wraps these (`make test`, `make race`, `make cover`, `make ci`). Raw commands:
+
 ```bash
-go test ./...                 # run everything
+go test ./...                 # run everything   (make test)
 go test ./switchyard/         # just the library
 go test -run TestDecide ./... # a subset by name
-go test -race ./...           # detect data races (round-robin is lock-free)
-go test -cover ./...          # coverage summary
+go test -race ./...           # detect data races (round-robin is lock-free)  (make race)
+go test -cover ./...          # coverage summary  (make cover)
 ```
 
-`go vet ./...` and `gofmt -l switchyard` should always be clean.
+`go vet ./...` and `gofmt -l .` should always be clean (`make lint`). If you add or change a command here, update the [Makefile](../Makefile) too.
 
 ## How it's organized
 

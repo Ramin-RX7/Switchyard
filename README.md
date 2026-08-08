@@ -26,7 +26,7 @@ Switchyard sits in front of your backend services and routes incoming traffic to
 **1. Build**
 
 ```bash
-go build -o Switchyard ./cmd/switchyard/
+make build          # or: go build -o Switchyard ./cmd/switchyard/
 ```
 
 **2. Create a config file**

@@ -4,16 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+A [Makefile](Makefile) wraps the common commands (`make` or `make help` lists them). It's a task hub only — Go's toolchain does the real building.
+
 ```bash
-go build -o Switchyard ./cmd/switchyard/        # build the binary
-go run ./cmd/switchyard/ -config switchyard.json # run directly (defaults to ./switchyard.json)
-go test ./...                                    # run all tests
-go test -race ./switchyard/                      # tests with the race detector
-go test -run TestName ./...                      # run a single test
-go vet ./...                                     # static checks
-gofmt -l .                                       # list files needing formatting (library is at repo root)
-go build ./examples/custom-selector/             # build an SDK example
+make build      # go build -o Switchyard ./cmd/switchyard/   (capital -o avoids the switchyard/ dir clash)
+make run        # go run ./cmd/switchyard/ -config switchyard.json
+make test       # go test ./...
+make race       # go test -race ./...
+make cover      # go test -cover ./...
+make lint       # go vet ./... + gofmt check
+make examples   # go build ./examples/...
+make ci         # fmt-check + vet + build + examples + test + race
+go test -run TestName ./...   # (still handy for a single test)
 ```
+
+**Keep the Makefile in sync:** if you add or change a build/test/lint command, update [Makefile](Makefile) (and this block) so they don't drift.
 
 The server listens on the address in the config's `listen` field, falling back to `:8091`.
 

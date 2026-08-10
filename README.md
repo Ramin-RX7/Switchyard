@@ -2,7 +2,7 @@
 
 An HTTP reverse proxy and API gateway written in Go.
 
-Switchyard sits in front of your backend services and routes incoming traffic to them — forwarding requests, load-balancing across pools, serving static files, injecting headers, and writing structured access logs. Configuration is a single JSON file with no dynamic reloading required.
+Switchyard sits in front of your backend services and routes incoming traffic to them — forwarding requests, load-balancing across pools, serving static files, injecting headers, and writing structured access logs. Configuration is a single JSON file, reloadable in-process without dropping connections.
 
 ---
 
@@ -17,6 +17,7 @@ Switchyard sits in front of your backend services and routes incoming traffic to
 - **Custom logging** — structured log lines with a user-defined format, parameterized fields, and optional body capture
 - **Multiple log outputs** — write to console, file, or both; stacked global and per-location loggers
 - **Fail-fast validation** — all configuration errors (unknown variables, bad regexes, missing backends) are caught at startup
+- **Zero-downtime reload** — `switchyard reload [--force]` swaps the config in-process without restarting or dropping connections; an invalid new config is rejected and the running one keeps serving
 - **Usable two ways** — run the turnkey binary with just a JSON config (nginx-style), or import it as a Go **SDK** and override any pipeline stage (routing, backend selection, logging, …) with your own code — no forking. See [docs/extending.md](docs/extending.md)
 
 ---
@@ -46,7 +47,16 @@ make build          # or: go build -o Switchyard ./cmd/switchyard/
 ./Switchyard -config switchyard.json
 ```
 
-Switchyard will start listening on `:8080` and forward all requests to `http://127.0.0.1:3000`.
+Switchyard will start listening on `:8080` and forward all requests to `http://127.0.0.1:3000`. It also writes a pid file (default `switchyard.pid`; `-pidfile PATH` to relocate, `-pidfile ""` to disable).
+
+**4. Reload config without downtime**
+
+```bash
+./Switchyard reload            # graceful: in-flight requests drain on the old config
+./Switchyard reload --force    # force: cancel in-flight requests (best-effort 503), then swap
+```
+
+Reload swaps the config in-process without restarting or dropping connections. Graceful lets in-flight requests finish on the old config while new requests use the new one; force cancels in-flight requests first. An invalid new config is rejected and the running config keeps serving. (`listen` and the `server` timeouts need a full restart to change.)
 
 ---
 

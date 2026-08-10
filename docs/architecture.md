@@ -123,6 +123,25 @@ Each step can be compiled and reviewed in isolation before moving to the next.
 
 ---
 
+## Configuration reload (hot reload)
+
+The turnkey binary reloads `switchyard.json` **without restarting the process or dropping connections**. It is in-process: the server keeps its one listening socket and atomically swaps the live `Proxy`.
+
+**Mechanism.** Each successfully-built config is a **generation**. The reloadable handler holds a pointer to the current generation; every incoming request reads that pointer **once at entry** and runs to completion against that snapshot. A reload builds a brand-new `Proxy` (via the `Build` closure — see [extending.md](extending.md#hot-reload-the-server-type)) and atomically swaps the pointer. Because in-flight requests already captured the old generation, a swap never disturbs them.
+
+**Two modes:**
+
+- **Graceful (default, nginx `SIGHUP`-style).** The new config is built and swapped in atomically. Requests already in flight keep running on the **old** generation until they finish; **new** requests use the new config. No connections dropped, zero downtime.
+- **Force (`SIGUSR2`).** Same atomic swap, but the old generation's request context is **cancelled** first, so in-flight requests end best-effort with a **503**. A request not yet streaming a response gets a clean 503 (`switchyard: reloading`); a response already streaming bytes has its upstream connection cut (a status can't change mid-stream — inherent to HTTP). The 503 is produced when the backend `ErrorHandler` recognizes the reload-cancellation cause.
+
+**Fail-safe.** A reload re-runs full config validation ([fail-fast](concepts.md#fail-fast)). If the new config is invalid, the reload is **rejected and logged**, and the currently-running generation keeps serving. A bad reload can never take the server down.
+
+**What reloads vs what doesn't.** Everything the config rebuilds takes effect live — backends, locations, routing, method rules, `set_headers`, responders, connection limits/overflow, IP access control, logging. **Not** reloadable in-process: the **`listen` address** and the client-facing **`server` timeouts** (`read_header_timeout`/`idle_timeout`/etc.) — they belong to the running `http.Server`, so changing them needs a full restart.
+
+The signals are wired by the CLI (`switchyard reload [--force]`) and the SDK `Server` type; see [config-reference.md](config-reference.md#running-the-binary) and [extending.md](extending.md#hot-reload-the-server-type).
+
+---
+
 ## Package Layout
 
 Switchyard is an importable library (`package switchyard`, import path `github.com/Ramin-RX7/Switchyard/switchyard`) living in the `switchyard/` directory. The `cmd/switchyard` binary is a thin consumer of it — the config-only turnkey mode. Both usage modes run off the same code.

@@ -12,17 +12,23 @@ BINARY := Switchyard
 CONFIG := switchyard.json
 
 .DEFAULT_GOAL := help
-.PHONY: help build run test race cover vet fmt fmt-check tidy examples lint ci clean
+.PHONY: help build run reload force-reload test race cover vet fmt fmt-check tidy examples lint ci clean
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-11s\033[0m %s\n", $$1, $$2}'
+		awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-13s\033[0m %s\n", $$1, $$2}'
 
 build: ## Compile the binary to ./Switchyard
 	go build -o $(BINARY) ./cmd/switchyard/
 
 run: ## Run the turnkey binary against switchyard.json
 	go run ./cmd/switchyard/ -config $(CONFIG)
+
+reload: ## Tell the running server to reload config gracefully (in-flight requests drain)
+	./$(BINARY) reload
+
+force-reload: ## Tell the running server to reload config, cancelling in-flight requests (503)
+	./$(BINARY) reload --force
 
 test: ## Run all tests
 	go test ./...

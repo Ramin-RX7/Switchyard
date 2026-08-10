@@ -249,6 +249,54 @@ mux.Handle("/", p.Handler())
 
 ---
 
+## Hot reload (the `Server` type)
+
+`Proxy.ListenAndServe` is the simple, non-reloadable path. For zero-downtime config reload — swapping the live `Proxy` in-process without restarting or dropping connections — use the exported **`Server`** type instead:
+
+```go
+srv := &sw.Server{
+    Addr:    cfg.Listen,
+    PidFile: "switchyard.pid",            // optional; "" disables the pid file
+    Build: func() (*sw.Proxy, error) {    // called at start AND on every reload
+        c, err := sw.LoadConfig(path)
+        if err != nil {
+            return nil, err
+        }
+        p, err := sw.New(c)
+        if err != nil {
+            return nil, err
+        }
+        // Re-apply any SDK overrides here so reload preserves them:
+        p.Selector = &MySelector{}
+        return p, nil
+    },
+}
+srv.Run() // blocks: serves + handles reload/shutdown signals
+```
+
+**The `Build` contract.** `Build` is the key idea. It is invoked once at startup and again on **every reload**, so config changes are picked up and — crucially for SDK users — your stage overrides are **re-applied inside it**. Anything you set on `p` outside `Build` is lost on the next reload; put it in `Build`. If `Build` returns an error (e.g. an invalid new config), the reload is rejected and logged and the currently-running `Proxy` keeps serving — a bad reload never takes the server down.
+
+**Reload semantics.** A reload builds a new `Proxy` and atomically swaps it in.
+
+- **Graceful (default)** — in-flight requests keep running on the old `Proxy` until they finish; new requests use the new one. Zero downtime.
+- **Force** — same swap, but in-flight requests are cancelled first (best-effort **503**).
+
+See [architecture.md](architecture.md#configuration-reload-hot-reload) for the generation/atomic-swap mechanism and the two modes in full.
+
+**Other exported members:**
+
+| Member | Purpose |
+|--------|---------|
+| `Server.Run() error` | Blocks: serves and handles reload (`SIGHUP`/`SIGUSR2`) and shutdown (`SIGINT`/`SIGTERM`) signals. The turnkey behavior. |
+| `Server.Start() (http.Handler, error)` | Initialize (calls `Build` once) and return the reloadable `http.Handler` to mount in your own `http.Server` — the reload-aware analog of `Proxy.Handler()`. |
+| `Server.Reload(force bool) error` | Trigger a reload programmatically, in-process — no signal needed. |
+| `sw.SignalReload(pidFile string, force bool) error` | Signal a **running** server (reads its pid file and sends `SIGHUP`/`SIGUSR2`). This is what the `switchyard reload [--force]` CLI uses. |
+| `sw.ReadPidFile(path string) (int, error)` | Read the pid recorded by a running server. |
+
+`Proxy.ListenAndServe(addr)` still exists for the simple, non-reloadable case; reach for `Server` only when you want hot reload.
+
+---
+
 ## Concurrency & tuning
 
 Go's `net/http` serves every request in its own goroutine, so Switchyard is concurrent by default. A few knobs and rules matter under load:

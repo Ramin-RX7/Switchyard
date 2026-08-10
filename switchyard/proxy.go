@@ -154,6 +154,13 @@ func New(cfg Config) (*Proxy, error) {
 		b := b
 		b.proxy.Transport = &proxyTransport{p: p, base: b.transport}
 		b.proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if context.Cause(r.Context()) == errReloading {
+				// The request was aborted by a force reload, not a backend
+				// failure — report 503 (best-effort; a response already
+				// streaming cannot have its status changed).
+				http.Error(w, "switchyard: reloading", http.StatusServiceUnavailable)
+				return
+			}
 			log.Printf("switchyard: backend %s failed: %v", b.URL, err)
 			p.BadGateway.Generate(w, r, captureRequest(r))
 		}
@@ -236,23 +243,30 @@ func (p *Proxy) globalLimit(h http.Handler) http.Handler {
 	})
 }
 
+// newHTTPServer builds the client-facing http.Server for this proxy with the
+// config-derived timeouts, defaulting addr to DefaultListen. The handler is
+// passed in so the reloadable Server can supply its own dispatcher.
+func (p *Proxy) newHTTPServer(addr string, h http.Handler) *http.Server {
+	if addr == "" {
+		addr = DefaultListen
+	}
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: p.srvReadHeader,
+		ReadTimeout:       p.srvReadTimeout,
+		WriteTimeout:      p.srvWriteout,
+		IdleTimeout:       p.srvIdle,
+	}
+}
+
 // ListenAndServe starts an HTTP server on addr (falling back to DefaultListen
 // when empty) and serves the proxy with defensive header/idle timeouts. Body
 // timeouts are intentionally left unset so slow or large proxied responses are
 // not cut off. It shuts down gracefully on SIGINT/SIGTERM, draining in-flight
 // requests (up to a 15s deadline) before returning nil.
 func (p *Proxy) ListenAndServe(addr string) error {
-	if addr == "" {
-		addr = DefaultListen
-	}
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           p.Handler(),
-		ReadHeaderTimeout: p.srvReadHeader,
-		ReadTimeout:       p.srvReadTimeout,
-		WriteTimeout:      p.srvWriteout,
-		IdleTimeout:       p.srvIdle,
-	}
+	srv := p.newHTTPServer(addr, p.Handler())
 
 	shutdownErr := make(chan error, 1)
 	go func() {
@@ -265,7 +279,7 @@ func (p *Proxy) ListenAndServe(addr string) error {
 		shutdownErr <- srv.Shutdown(ctx)
 	}()
 
-	log.Printf("switchyard: listening on %s, %d backend(s), %d location(s)", addr, len(p.Pool.Backends()), len(p.Locations))
+	log.Printf("switchyard: listening on %s, %d backend(s), %d location(s)", srv.Addr, len(p.Pool.Backends()), len(p.Locations))
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err // failed to bind / unexpected error
 	}

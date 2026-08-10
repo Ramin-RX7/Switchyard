@@ -9,6 +9,8 @@ A [Makefile](Makefile) wraps the common commands (`make` or `make help` lists th
 ```bash
 make build      # go build -o Switchyard ./cmd/switchyard/   (capital -o avoids the switchyard/ dir clash)
 make run        # go run ./cmd/switchyard/ -config switchyard.json
+make reload     # ./Switchyard reload          (graceful hot reload of the running server)
+make force-reload # ./Switchyard reload --force (force reload: cancel in-flight, best-effort 503)
 make test       # go test ./...
 make race       # go test -race ./...
 make cover      # go test -cover ./...
@@ -20,7 +22,7 @@ go test -run TestName ./...   # (still handy for a single test)
 
 **Keep the Makefile in sync:** if you add or change a build/test/lint command, update [Makefile](Makefile) (and this block) so they don't drift.
 
-The server listens on the address in the config's `listen` field, falling back to `:8091`.
+The server listens on the address in the config's `listen` field, falling back to `:8091`. The turnkey binary (`./Switchyard -config switchyard.json`) also writes a pid file (default `switchyard.pid`; `-pidfile PATH` to relocate, `-pidfile ""` to disable) and drains in-flight requests (15s) on SIGINT/SIGTERM. Reload the config live with `./Switchyard reload` (graceful) or `./Switchyard reload --force` (force) — these read the pid file and signal the running process (graceful = SIGHUP, force = SIGUSR2, so `kill -HUP/-USR2 <pid>` also work); `make reload` / `make force-reload` wrap them.
 
 ## Documentation
 
@@ -41,7 +43,7 @@ Full feature documentation is in [`docs/`](docs/):
 
 ## Architecture
 
-Switchyard is an importable library (`package switchyard`, import path `github.com/Ramin-RX7/Switchyard/switchyard`) living in the [switchyard/](switchyard/) directory. The `cmd/switchyard` binary is a thin consumer — it's the config-only turnkey mode. Both usage modes (config-only binary; SDK import) run off the same code. Entry points: `LoadConfig` ([switchyard/config.go](switchyard/config.go)), `New` + `Handler`/`ListenAndServe` ([switchyard/proxy.go](switchyard/proxy.go)).
+Switchyard is an importable library (`package switchyard`, import path `github.com/Ramin-RX7/Switchyard/switchyard`) living in the [switchyard/](switchyard/) directory. The `cmd/switchyard` binary is a thin consumer — it's the config-only turnkey mode. Both usage modes (config-only binary; SDK import) run off the same code. Entry points: `LoadConfig` ([switchyard/config.go](switchyard/config.go)), `New` + `Handler`/`ListenAndServe` ([switchyard/proxy.go](switchyard/proxy.go)). For zero-downtime reload there is an exported `Server` type (`Server{Addr, PidFile, Build}` + `Run`/`Start`/`Reload`, plus `SignalReload`/`ReadPidFile`) — `Build` is invoked at start and on every reload, so SDK stage overrides must be re-applied inside it. See [docs/extending.md](docs/extending.md#hot-reload-the-server-type).
 
 The request lifecycle is split into three strictly separate stages — preserve this separation when adding features.
 
@@ -77,6 +79,8 @@ See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, 
 **Variables** ([docs/variables.md](docs/variables.md)): nginx-style `$name`/`${name}` placeholders resolved from the request snapshot. Used in `set_headers` values, `{var.NAME}` log fields, and `response`/`backend_error`/`not_found`/`method_not_allowed`/`overflow` bodies and headers. Includes `$time_iso8601` and `$time_unix` (request-receipt time). Validated at startup.
 
 **set_headers** ([docs/set-headers.md](docs/set-headers.md)): map of header name → template value; applied before forwarding. Global and location headers stack (`applyStackedHeaders`): location wins on conflicts, all other globals retained.
+
+**Hot reload** ([docs/architecture.md](docs/architecture.md#configuration-reload-hot-reload)): the binary swaps `switchyard.json` in-process (atomic `Proxy` generation swap; one process, one listening socket) with no restart and no dropped connections. `switchyard reload` = graceful (SIGHUP; in-flight requests finish on the old config, new requests use the new one); `switchyard reload --force` = force (SIGUSR2; in-flight requests cancelled → best-effort 503). Fail-safe: an invalid new config is rejected and logged, and the running config keeps serving. Everything the config rebuilds reloads live; the `listen` address and `server` timeouts (owned by the running `http.Server`) need a full restart. SDK: the exported `Server` type (see Architecture above).
 
 **Logging** ([docs/logging.md](docs/logging.md)): optional `logging` block with `format`, `outputs` (console/file). Format uses `{field}` and `{group.param}` placeholders; compiled and validated at startup. Both global and location loggers fire for matched requests. Bodies buffered on demand only when referenced in the format.
 

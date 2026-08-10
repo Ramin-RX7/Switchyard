@@ -2,6 +2,19 @@
 
 Switchyard is configured via a single JSON file (default: `switchyard.json`). Pass a different path with the `-config` flag. All validation is [fail-fast](concepts.md#fail-fast): the process exits on the first error before serving any traffic.
 
+### Running the binary
+
+Start the server with `./Switchyard -config switchyard.json`. It listens on [`listen`](#listen) and writes a **pid file** (default `switchyard.pid`; override with `-pidfile PATH`, or `-pidfile ""` to disable). On `SIGINT`/`SIGTERM` it drains in-flight requests (15s) and removes the pid file.
+
+**Hot reload.** Reload the config without restarting the process or dropping connections:
+
+```bash
+./Switchyard reload            # graceful: in-flight requests drain on the old config; new requests use the new one
+./Switchyard reload --force    # force: cancel in-flight requests (best-effort 503), then swap
+```
+
+`reload` reads the pid file (`-pidfile PATH` to point elsewhere) and signals the running server. The reload re-runs full validation; an invalid new config is rejected and logged, and the running config keeps serving. All fields below reload live **except** [`listen`](#listen) and the [`server`](#server) timeouts, which belong to the running `http.Server` and require a full restart to change. See [architecture.md](architecture.md#configuration-reload-hot-reload) for the mechanism and [extending.md](extending.md#hot-reload-the-server-type) for the SDK equivalent.
+
 Connection limits and timeouts are configurable at three scopes — project (top-level), per [Backend](#backend), and per [Location](#location) — via the fields below. Durations are integer numbers of seconds (e.g. `30`); `0`/omitted means "no limit". See [Connection limits & timeouts](#connection-limits--timeouts). (These can also be overridden in Go via `Proxy.Transport` / `Proxy.MaxInFlight` — see [extending.md](extending.md#concurrency--tuning).)
 
 ---
@@ -238,7 +251,7 @@ The per-backend `disable_keep_alive: true` forces a fresh connection per request
 
 ### Server
 
-Client-facing `http.Server` timeouts. **Project-only** (there is one server accepting client connections).
+Client-facing `http.Server` timeouts. **Project-only** (there is one server accepting client connections). **Not hot-reloadable** — these belong to the running `http.Server`, so changing them requires a full restart (see [Running the binary](#running-the-binary)).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

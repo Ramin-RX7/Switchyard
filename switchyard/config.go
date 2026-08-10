@@ -122,6 +122,9 @@ type Config struct {
 	BackendError     *ResponseConfig `json:"backend_error"`
 	NotFound         *ResponseConfig `json:"not_found"`
 	MethodNotAllowed *ResponseConfig `json:"method_not_allowed"`
+	// Forbidden overrides the built-in 403 response returned when a location's
+	// access control denies the client. When nil, a sensible default is used.
+	Forbidden *ResponseConfig `json:"forbidden"`
 }
 
 // LocationConfig describes one location block. Path is matched as a prefix
@@ -140,6 +143,12 @@ type LocationConfig struct {
 	Response    *ResponseConfig   `json:"response"`     // generated response, for type "response"
 	Logging     *LogConfig        `json:"logging"`
 	SetHeaders  map[string]string `json:"set_headers"`
+	// Whitelist / Blacklist restrict access to this location by client IP. Each
+	// entry is a single IP or a CIDR range (IPv4 or IPv6). A blacklisted IP is
+	// denied; when a whitelist is set, only listed IPs are allowed. Empty = no
+	// restriction. Enforced by the location's AccessController (see access.go).
+	Whitelist []string `json:"whitelist"`
+	Blacklist []string `json:"blacklist"`
 	// MaxConnections caps concurrent in-flight requests routed through this
 	// location (0 = unlimited). Independent of backend/project caps.
 	MaxConnections *int `json:"max_connections"`
@@ -307,6 +316,9 @@ func (c Config) validate() error {
 		return err
 	}
 	if err := checkResponse("method_not_allowed", c.MethodNotAllowed); err != nil {
+		return err
+	}
+	if err := checkResponse("forbidden", c.Forbidden); err != nil {
 		return err
 	}
 	for _, bc := range c.Backends {

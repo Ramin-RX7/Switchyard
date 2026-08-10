@@ -46,6 +46,10 @@ func (d *DefaultDecider) Decide(req Request) Decision {
 		if loc == nil {
 			return Decision{Action: ActionReject, Reason: "no matching location", Status: http.StatusNotFound}
 		}
+		if loc.Access != nil && !loc.Access.Allow(req) {
+			return Decision{Action: ActionReject, Reason: "location " + loc.raw + ": forbidden",
+				Location: loc, Status: http.StatusForbidden}
+		}
 		if loc.Kind == KindStatic {
 			return Decision{Action: ActionStatic, Reason: "location " + loc.raw, Location: loc}
 		}

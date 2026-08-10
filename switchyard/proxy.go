@@ -29,6 +29,7 @@ const DefaultListen = ":8091"
 //	NotFound  — response when no location matched (default: 404 TemplateResponder)
 //	BadGateway — response when an upstream is unreachable or a pool is empty (default: 502)
 //	MethodNotAllowed — response when no backend accepts the request method (default: 405)
+//	Forbidden — response when a location's access control denies the client (default: 403)
 //	Transport — the shared http.RoundTripper used for all backends (tuned default)
 //	MaxInFlight — optional ceiling on concurrent requests (0 = unlimited)
 //
@@ -45,14 +46,16 @@ type Proxy struct {
 	Pool      BackendPool     // global backend pool (used only when no locations)
 	Locations []*Location
 
-	// NotFound / BadGateway / MethodNotAllowed generate the built-in error
-	// responses (404 when no location matched; 502 when an upstream is
+	// NotFound / BadGateway / MethodNotAllowed / Forbidden generate the built-in
+	// error responses (404 when no location matched; 502 when an upstream is
 	// unreachable or a pool is empty; 405 when a location matched but no backend
-	// accepts the request method). New wires config-driven defaults; reassign
-	// before serving to override.
+	// accepts the request method; 403 when a location's access control denies the
+	// client). New wires config-driven defaults; reassign before serving to
+	// override.
 	NotFound         ResponseGenerator
 	BadGateway       ResponseGenerator
 	MethodNotAllowed ResponseGenerator
+	Forbidden        ResponseGenerator
 
 	// Transport, when non-nil, is a global override used to reach ALL backends.
 	// By default it is nil: New builds a tuned per-backend transport from config
@@ -121,6 +124,10 @@ func New(cfg Config) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	forbidden, err := responderOf(cfg.Forbidden, http.StatusForbidden, "switchyard: forbidden")
+	if err != nil {
+		return nil, err
+	}
 
 	rh, rt, wt, it := cfg.serverTimeouts()
 	p := &Proxy{
@@ -131,6 +138,7 @@ func New(cfg Config) (*Proxy, error) {
 		NotFound:         notFound,
 		BadGateway:       badGateway,
 		MethodNotAllowed: methodNotAllowed,
+		Forbidden:        forbidden,
 		MaxInFlight:      ptrInt(cfg.MaxConnections, 0),
 		overflow:         overflow,
 		srvReadHeader:    rh,
@@ -197,6 +205,7 @@ func (p *Proxy) forwardPool(d Decision) []*Backend {
 func (p *Proxy) notFoundResponder() ResponseGenerator         { return p.NotFound }
 func (p *Proxy) badGatewayResponder() ResponseGenerator       { return p.BadGateway }
 func (p *Proxy) methodNotAllowedResponder() ResponseGenerator { return p.MethodNotAllowed }
+func (p *Proxy) forbiddenResponder() ResponseGenerator        { return p.Forbidden }
 
 // Handler returns an http.Handler that serves the proxy. Use it to mount
 // Switchyard inside an existing server or middleware chain. When MaxInFlight is

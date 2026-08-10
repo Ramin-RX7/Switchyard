@@ -16,6 +16,10 @@ A path-based routing block, similar to nginx's `location` directive. Locations a
 
 After a request's path matches a location, Switchyard also selects the backend by HTTP method. Each backend may declare a `methods` list; a backend with no `methods` accepts any method. Within the matched location, only backends whose `methods` include the request method are eligible for selection. If a location matched but no backend accepts the request method, the request is rejected with **405 Method Not Allowed** (still an `ActionReject`), produced by the configurable `method_not_allowed` [Response Generator](#response-generator); an `Allow` header lists the methods the location's backends accept. See [routing.md#method-routing](routing.md#method-routing).
 
+## Access Control
+
+Per-location restriction of clients by IP. A location may declare a `whitelist` and/or a `blacklist`, each a list of single IPs or CIDR ranges (IPv4 or IPv6). Evaluation is **blacklist-first, then whitelist**: a blacklisted IP is denied; otherwise, if a non-empty whitelist is configured, only listed IPs are allowed (an unparseable client address fails closed); otherwise the client is allowed. Empty/omitted lists mean no restriction. Access control is evaluated in the routing stage right after the location matches — before method routing and backend selection — so it applies to `proxy`, `static`, and `response` locations. A denied client is rejected with **403 Forbidden** (still an `ActionReject`), produced by the configurable `forbidden` [Response Generator](#response-generator). The built-in check uses the connecting peer's address (`RemoteAddr`); SDK users can supply any `AccessController` (e.g. `X-Forwarded-For`-aware, token, or geo checks). See [routing.md#ip-access-control](routing.md#ip-access-control) and [extending.md](extending.md#the-pluggable-surface).
+
 ## Decision
 
 The output of Switchyard's passive routing stage. A `Decision` records what should happen to a request — which action to take (`forward`, `static`, `respond`, or `reject`), which backend was selected, and which location matched — without actually doing anything. No network I/O happens during decision-making. See [architecture.md](architecture.md).
@@ -27,7 +31,7 @@ One of four values that a `Decision` can carry:
 - **`forward`** — proxy the request to a backend
 - **`static`** — serve a file from disk
 - **`respond`** — return a Switchyard-generated response (a `type: "response"` location — see [Response Generator](#response-generator))
-- **`reject`** — return an HTTP error to the client (404 when no location matched, 502 when a proxy location has no reachable backends, 405 when a location matched but no backend accepts the request method — see [Method Routing](#method-routing))
+- **`reject`** — return an HTTP error to the client (404 when no location matched, 502 when a proxy location has no reachable backends, 405 when a location matched but no backend accepts the request method — see [Method Routing](#method-routing), 403 when a location matched but its access control denied the client IP — see [Access Control](#access-control))
 
 ## Request Snapshot
 
@@ -43,7 +47,7 @@ A string that contains one or more variable references. Templates support two sy
 
 ## Response Generator
 
-The abstract stage that produces Switchyard's *own* HTTP responses — a status, a set of headers, and a body, with `$variable` substitution applied to the headers and body. It backs the `type: "response"` location and the built-in error responses (502 backend-unavailable, 404 no-match, 405 method-not-allowed) as well as the `overflow` reject response. Each of these is overridable: via config (`response`, `backend_error`, `not_found`, `method_not_allowed`, `overflow`) and, for SDK users, by replacing the generator (`loc.Responder`, `p.BadGateway`, `p.NotFound`, `p.MethodNotAllowed`). See [config-reference.md#response](config-reference.md#response).
+The abstract stage that produces Switchyard's *own* HTTP responses — a status, a set of headers, and a body, with `$variable` substitution applied to the headers and body. It backs the `type: "response"` location and the built-in error responses (502 backend-unavailable, 404 no-match, 405 method-not-allowed, 403 access-denied) as well as the `overflow` reject response. Each of these is overridable: via config (`response`, `backend_error`, `not_found`, `method_not_allowed`, `forbidden`, `overflow`) and, for SDK users, by replacing the generator (`loc.Responder`, `p.BadGateway`, `p.NotFound`, `p.MethodNotAllowed`, `p.Forbidden`). See [config-reference.md#response](config-reference.md#response).
 
 ## Round-Robin
 

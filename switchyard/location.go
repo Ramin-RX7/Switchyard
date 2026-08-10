@@ -25,9 +25,9 @@ const (
 // directory; a "response" location returns a Switchyard-generated response.
 // Logging and headers, when set, stack on top of the global ones.
 //
-// The exported fields (Kind, Pool, Selector, Static, Responder, Logger, Headers)
-// are overridable by SDK users after New — e.g. assign a custom Selector to change
-// this location's load balancing without touching the rest of its configuration.
+// The exported fields (Kind, Pool, Selector, Static, Responder, Access, Logger,
+// Headers) are overridable by SDK users after New — e.g. assign a custom Selector
+// to change this location's load balancing without touching the rest of its config.
 //
 // A Location must not be copied after construction: its Selector may hold an
 // atomic counter. Always pass it around as *Location.
@@ -48,6 +48,9 @@ type Location struct {
 
 	// response
 	Responder ResponseGenerator // generates a response; nil unless Kind == KindRespond
+
+	// access control (nil = unrestricted)
+	Access AccessController
 
 	// stacking features (nil = none for this location)
 	Logger  Logger
@@ -153,6 +156,14 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*Backend) ([]*Locat
 		}
 		loc.Kind = kind
 		loc.lim = newLimiter(ptrInt(c.MaxConnections, 0))
+
+		if len(c.Whitelist) > 0 || len(c.Blacklist) > 0 {
+			ac, err := newIPAccessControl(c.Whitelist, c.Blacklist)
+			if err != nil {
+				return nil, fmt.Errorf("location %q: %w", c.Path, err)
+			}
+			loc.Access = ac
+		}
 
 		if c.Logging != nil {
 			l, err := newLogger(*c.Logging)

@@ -118,6 +118,46 @@ For a request to `/api/...`:
 
 ---
 
+## IP access control
+
+A location may restrict which clients reach it by IP, via two optional fields — `whitelist` and `blacklist` (see [config-reference.md#whitelist--blacklist](config-reference.md#whitelist--blacklist)). Each is an array of entries; every entry is a single IP address or a CIDR range, IPv4 or IPv6 (e.g. `"203.0.113.7"`, `"192.0.2.0/24"`, `"2001:db8::/32"`).
+
+Access control is per-location and is evaluated **right after the location matches**, before method routing and backend selection — so it applies equally to `proxy`, `static`, and `response` locations. Denial is a pure routing decision; nothing is forwarded or served.
+
+**Evaluation order** (blacklist wins over whitelist):
+
+1. If the client IP is in the `blacklist` → **deny**.
+2. Otherwise, if a non-empty `whitelist` is configured → allow only if the IP is in it (a client address that cannot be parsed fails closed → deny).
+3. Otherwise → allow.
+
+A whitelist is enforced only when non-empty. Omitting both (or leaving both empty) means every client is accepted (the default, unchanged behavior).
+
+When a client is denied, Switchyard returns **403 Forbidden** — produced by the configurable [`forbidden`](config-reference.md#backend_error-not_found-method_not_allowed-and-forbidden) responder (with a sensible default). Malformed entries are rejected at startup.
+
+The client IP is the connecting peer's address (`RemoteAddr`). If Switchyard sits behind a trusted load balancer where the real client IP is in `X-Forwarded-For`, the built-in check sees the load balancer's address; supply a custom `AccessController` via the SDK to consult `X-Forwarded-For` instead — see [extending.md#the-pluggable-surface](extending.md#the-pluggable-surface).
+
+```json
+{
+    "locations": [
+        {
+            "path": "/api/",
+            "backends": ["api1", "api2"],
+            "blacklist": ["192.0.2.0/24", "10.0.0.0/8"]
+        },
+        {
+            "path": "/admin/",
+            "backends": ["admin"],
+            "whitelist": ["203.0.113.0/24", "198.51.100.7"]
+        }
+    ]
+}
+```
+
+- `/api/*` — every client is allowed **except** those in `192.0.2.0/24` or `10.0.0.0/8`, which get a `403`.
+- `/admin/*` — **only** clients in `203.0.113.0/24` or the single address `198.51.100.7` are allowed; everyone else gets a `403`.
+
+---
+
 ## `strip_prefix` for Static Locations
 
 Before looking up a file in `root`, Switchyard strips a prefix from the incoming request path. By default (for non-regex locations), `strip_prefix` is set to the location's `path`.

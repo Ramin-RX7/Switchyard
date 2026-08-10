@@ -21,13 +21,15 @@ type Actor interface {
 type actorEnv interface {
 	applyStackedHeaders(req Request, r *http.Request, loc *Location)
 	forwardPool(d Decision) []*Backend
-	// notFoundResponder / badGatewayResponder / methodNotAllowedResponder are the
-	// generators for routing rejects (404 no-match; 502 empty pool / no backend;
-	// 405 no backend accepts the method). Read live so SDK overrides of
-	// p.NotFound / p.BadGateway / p.MethodNotAllowed take effect.
+	// notFoundResponder / badGatewayResponder / methodNotAllowedResponder /
+	// forbiddenResponder are the generators for routing rejects (404 no-match;
+	// 502 empty pool / no backend; 405 no backend accepts the method; 403 access
+	// denied). Read live so SDK overrides of the corresponding Proxy fields take
+	// effect.
 	notFoundResponder() ResponseGenerator
 	badGatewayResponder() ResponseGenerator
 	methodNotAllowedResponder() ResponseGenerator
+	forbiddenResponder() ResponseGenerator
 }
 
 // DefaultActor is the built-in Actor. On a forward it enforces the location and
@@ -97,6 +99,8 @@ func (a *DefaultActor) Act(w http.ResponseWriter, r *http.Request, req Request, 
 				w.Header().Set("Allow", strings.Join(d.AllowedMethods, ", "))
 			}
 			a.env.methodNotAllowedResponder().Generate(w, r, req)
+		case http.StatusForbidden:
+			a.env.forbiddenResponder().Generate(w, r, req)
 		case 0, http.StatusBadGateway:
 			a.env.badGatewayResponder().Generate(w, r, req)
 		default:

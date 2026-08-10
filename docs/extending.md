@@ -44,7 +44,7 @@ All nine core stages are pluggable. Each is an interface with a config-driven de
 | Backend list | `BackendPool { Backends() []*Backend }` | `StaticPool` | `p.Pool` (global pool), `loc.Pool` (per location) |
 | set_headers | `HeaderApplier { Apply(req Request, r *http.Request) }` | `TemplateHeaderSetter` | `p.Headers` (global), `loc.Headers` (per location) |
 | Media serving | `StaticServer { Serve(w, r, req Request) }` | `FileServer` | `loc.Static` (per static location) |
-| Response generation | `ResponseGenerator { Generate(w, r, req Request) }` | `TemplateResponder` | `loc.Responder` (response locations), `p.NotFound` / `p.BadGateway` (global error responses) |
+| Response generation | `ResponseGenerator { Generate(w, r, req Request) }` | `TemplateResponder` | `loc.Responder` (response locations), `p.NotFound` / `p.BadGateway` / `p.MethodNotAllowed` (global error responses) |
 | Logging | `Logger { Log(rec *LogRecord); NeedsRequestBody() bool; NeedsResponseBody() bool }` | `FormatLogger` | `p.Logger` (global), `loc.Logger` (per location) |
 
 ### Two levels: global and per-location
@@ -191,7 +191,7 @@ p.Headers = &withRequestID{TemplateHeaderSetter: base}
 
 **Custom backend pool** — implement `BackendPool` to feed selection a dynamic set (health-checked, service-discovery-backed). Set `p.Pool` (global) or `loc.Pool` (per location); it's called per request, so keep it cheap and concurrency-safe.
 
-**Custom response generator** — implement `ResponseGenerator` to produce Switchyard's own responses (status + headers + body). The default `TemplateResponder` is config-driven; replace it to emit richer error payloads, structured JSON, metrics, etc. Assign it globally to `p.NotFound` (no-match 404) or `p.BadGateway` (backend-unavailable/empty-pool 502), or per response-location to `loc.Responder`. These fields are read **live**, so overrides after `New()` take effect. This example swaps the 502 for a JSON error:
+**Custom response generator** — implement `ResponseGenerator` to produce Switchyard's own responses (status + headers + body). The default `TemplateResponder` is config-driven; replace it to emit richer error payloads, structured JSON, metrics, etc. Assign it globally to `p.NotFound` (no-match 404), `p.BadGateway` (backend-unavailable/empty-pool 502), or `p.MethodNotAllowed` (location matched but no backend accepts the request method, 405), or per response-location to `loc.Responder`. These fields are read **live**, so overrides after `New()` take effect. This example swaps the 502 for a JSON error:
 
 ```go
 type jsonError struct{}
@@ -202,7 +202,7 @@ func (jsonError) Generate(w http.ResponseWriter, _ *http.Request, req sw.Request
 	fmt.Fprintf(w, `{"error":"upstream unavailable","path":%q}`, req.URI)
 }
 
-p.BadGateway = jsonError{} // no-match 404 → p.NotFound; response location → loc.Responder
+p.BadGateway = jsonError{} // no-match 404 → p.NotFound; 405 → p.MethodNotAllowed; response location → loc.Responder
 ```
 
 (The `overflow` reject response stays config-driven; for full programmatic control over it, override the `Actor`.)
@@ -257,6 +257,8 @@ Go's `net/http` serves every request in its own goroutine, so Switchyard is conc
   ```
 
   This differs from `overflow: reroute`: capacity-aware *selection* picks a good backend up front on every request; `reroute` only kicks in *after* the chosen backend is found full. They compose.
+
+- **Method-aware selection.** `Backend.Accepts(method string) bool` reports whether a backend accepts a given HTTP method (always true when the backend has no `methods` restriction). A custom `BackendSelector`/`Decider` can use it to stay method-correct. The built-in path already filters the pool by method before selection, and `overflow: reroute` only ever considers method-eligible backends. See [routing.md#method-routing](routing.md#method-routing).
 
 - **Custom over-capacity response.** Beyond the `overflow` status/body config, an SDK user can override the `Actor` for full control (custom body, headers, metrics) when a cap is hit.
 

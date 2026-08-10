@@ -25,8 +25,16 @@ type Decision struct {
 	// stacked logger and headers, read during handling.
 	Location *Location
 	// Status is the HTTP status for an Action of "reject": 404 when no location
-	// matched, 502 otherwise. Zero means "default to 502".
+	// matched, 405 when none of the matched location's backends accept the
+	// request method, 502 otherwise. Zero means "default to 502".
 	Status int
+	// Candidates is the method-eligible subset of the pool selected from. It is
+	// what a forward may reroute within (so reroute never picks a backend that
+	// rejects the method). Nil for non-forward decisions.
+	Candidates []*Backend
+	// AllowedMethods is the union of methods the matched pool accepts, used to
+	// set the Allow header on a 405 reject.
+	AllowedMethods []string
 }
 
 func (d Decision) String() string {

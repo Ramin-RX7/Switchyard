@@ -114,11 +114,14 @@ type Config struct {
 	Server *ServerConfig `json:"server"`
 	// Overflow controls behavior when a max_connections cap is hit.
 	Overflow *OverflowConfig `json:"overflow"`
-	// BackendError / NotFound override Switchyard's built-in error responses
-	// (502 when an upstream is unreachable or a pool is empty; 404 when no
-	// location matched). When nil, sensible defaults are used. See response.go.
-	BackendError *ResponseConfig `json:"backend_error"`
-	NotFound     *ResponseConfig `json:"not_found"`
+	// BackendError / NotFound / MethodNotAllowed override Switchyard's built-in
+	// error responses (502 when an upstream is unreachable or a pool is empty;
+	// 404 when no location matched; 405 when a location matched but no backend
+	// accepts the request method). When nil, sensible defaults are used. See
+	// response.go.
+	BackendError     *ResponseConfig `json:"backend_error"`
+	NotFound         *ResponseConfig `json:"not_found"`
+	MethodNotAllowed *ResponseConfig `json:"method_not_allowed"`
 }
 
 // LocationConfig describes one location block. Path is matched as a prefix
@@ -148,6 +151,10 @@ type LocationConfig struct {
 type BackendConfig struct {
 	ID  string `json:"id"`
 	URL string `json:"url"`
+	// Methods restricts which HTTP methods this backend accepts. Empty/omitted
+	// means it accepts any method. When set, a location routes a request to this
+	// backend only if the request method is listed (matched case-insensitively).
+	Methods []string `json:"methods"`
 	// MaxConnections caps concurrent in-flight requests to this backend
 	// (0 = unlimited). Exposed to custom selectors via Backend.MaxConns.
 	MaxConnections *int `json:"max_connections"`
@@ -297,6 +304,9 @@ func (c Config) validate() error {
 		return err
 	}
 	if err := checkResponse("not_found", c.NotFound); err != nil {
+		return err
+	}
+	if err := checkResponse("method_not_allowed", c.MethodNotAllowed); err != nil {
 		return err
 	}
 	for _, bc := range c.Backends {

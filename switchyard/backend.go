@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -18,8 +19,20 @@ type Backend struct {
 
 	proxy          *httputil.ReverseProxy
 	transport      *http.Transport
-	lim            *limiter      // concurrency cap (nil = unlimited)
-	requestTimeout time.Duration // per-request upstream deadline (0 = none)
+	lim            *limiter            // concurrency cap (nil = unlimited)
+	requestTimeout time.Duration       // per-request upstream deadline (0 = none)
+	methods        map[string]struct{} // accepted HTTP methods, upper-cased (nil/empty = all)
+}
+
+// Accepts reports whether this backend serves the given HTTP method. A backend
+// with no configured methods accepts every method. Matching is
+// case-insensitive. Exported so custom selectors/deciders can be method-aware.
+func (b *Backend) Accepts(method string) bool {
+	if len(b.methods) == 0 {
+		return true
+	}
+	_, ok := b.methods[strings.ToUpper(method)]
+	return ok
 }
 
 // MaxConns is this backend's configured max concurrent in-flight requests
@@ -66,6 +79,10 @@ func buildBackends(cfg Config) ([]*Backend, error) {
 		}
 		seenID[id] = true
 
+		methods, err := methodSet(bc.Methods)
+		if err != nil {
+			return nil, fmt.Errorf("backend %q: %w", raw, err)
+		}
 		s := cfg.resolveBackend(bc)
 		b := &Backend{
 			ID:             id,
@@ -74,6 +91,7 @@ func buildBackends(cfg Config) ([]*Backend, error) {
 			transport:      buildTransport(s),
 			lim:            newLimiter(s.maxConns),
 			requestTimeout: s.requestTimeout,
+			methods:        methods,
 		}
 		// The ErrorHandler for backend failures (unreachable host, reset
 		// connection, etc.) is installed by New once the Proxy exists, so it can
@@ -81,4 +99,22 @@ func buildBackends(cfg Config) ([]*Backend, error) {
 		backends = append(backends, b)
 	}
 	return backends, nil
+}
+
+// methodSet normalizes a configured methods list into an upper-cased set. It
+// returns nil for an empty list (meaning "accept all") and fails fast on a
+// blank entry.
+func methodSet(methods []string) (map[string]struct{}, error) {
+	if len(methods) == 0 {
+		return nil, nil
+	}
+	set := make(map[string]struct{}, len(methods))
+	for _, m := range methods {
+		m = strings.ToUpper(strings.TrimSpace(m))
+		if m == "" {
+			return nil, fmt.Errorf("methods: entries must not be empty")
+		}
+		set[m] = struct{}{}
+	}
+	return set, nil
 }

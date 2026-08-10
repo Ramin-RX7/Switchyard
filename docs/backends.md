@@ -23,8 +23,9 @@ A backend is a configured upstream server that Switchyard can proxy requests to.
 | `timeouts` | object | project value | Per-backend `request` / `tls_handshake` timeouts |
 | `transport` | object | project value | Per-backend idle-pool tuning |
 | `disable_keep_alive` | bool | `false` | Force a fresh connection per request |
+| `methods` | array of string | — (accepts all) | HTTP methods this backend accepts |
 
-The last four are documented in full in [config-reference.md#connection-limits--timeouts](config-reference.md#connection-limits--timeouts).
+The `timeouts` / `transport` / `disable_keep_alive` fields are documented in full in [config-reference.md#connection-limits--timeouts](config-reference.md#connection-limits--timeouts).
 
 ### Uniqueness
 
@@ -41,6 +42,22 @@ If `id` is omitted, it defaults to the backend's `url`. When referencing backend
 When a request is routed to a pool of backends (either the global pool or a location's own pool), Switchyard selects the backend using **round-robin**: an atomic counter is incremented per request and taken modulo the pool size.
 
 The counter is an `atomic.Uint64`, so no lock is acquired and there is no contention under concurrent requests. Each location maintains its own independent counter, so two locations sharing a backend do not interfere with each other's rotation.
+
+---
+
+## Accepted Methods
+
+A backend may declare a `methods` list — the HTTP method names it accepts (e.g. `["GET", "HEAD"]`). This is a global, per-backend property: a backend used by several locations carries the same constraint everywhere.
+
+- Matching is **case-insensitive** (config values are normalized to upper-case). Only listed methods match — there is no implicit HEAD-from-GET.
+- An omitted or empty `methods` list means the backend accepts **any** method (the unconstrained default).
+- Within a matched location, selection (round-robin, or a custom selector) only considers backends whose `methods` include the request method. If no backend in the pool accepts the method, the request yields **405** via the [`method_not_allowed`](config-reference.md#response) responder. See [routing.md#method-routing](routing.md#method-routing).
+
+A backend exposes its method acceptance so a **custom `BackendSelector`/`Decider` can be method-aware**:
+
+- `Backend.Accepts(method string) bool` — true when the backend accepts `method` (and always true when the backend has no method restriction).
+
+The [`overflow: reroute`](config-reference.md#overflow) strategy also honors this: reroute only ever considers method-eligible backends.
 
 ---
 

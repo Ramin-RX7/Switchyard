@@ -3,6 +3,7 @@ package switchyard
 import (
 	"context"
 	"net/http"
+	"strings"
 )
 
 // Actor performs the side effect a Decision calls for: forward to a backend,
@@ -20,11 +21,13 @@ type Actor interface {
 type actorEnv interface {
 	applyStackedHeaders(req Request, r *http.Request, loc *Location)
 	forwardPool(d Decision) []*Backend
-	// notFoundResponder / badGatewayResponder are the generators for routing
-	// rejects (404 no-match; 502 empty pool / no backend). Read live so SDK
-	// overrides of p.NotFound / p.BadGateway take effect.
+	// notFoundResponder / badGatewayResponder / methodNotAllowedResponder are the
+	// generators for routing rejects (404 no-match; 502 empty pool / no backend;
+	// 405 no backend accepts the method). Read live so SDK overrides of
+	// p.NotFound / p.BadGateway / p.MethodNotAllowed take effect.
 	notFoundResponder() ResponseGenerator
 	badGatewayResponder() ResponseGenerator
+	methodNotAllowedResponder() ResponseGenerator
 }
 
 // DefaultActor is the built-in Actor. On a forward it enforces the location and
@@ -89,6 +92,11 @@ func (a *DefaultActor) Act(w http.ResponseWriter, r *http.Request, req Request, 
 		switch d.Status {
 		case http.StatusNotFound:
 			a.env.notFoundResponder().Generate(w, r, req)
+		case http.StatusMethodNotAllowed:
+			if len(d.AllowedMethods) > 0 {
+				w.Header().Set("Allow", strings.Join(d.AllowedMethods, ", "))
+			}
+			a.env.methodNotAllowedResponder().Generate(w, r, req)
 		case 0, http.StatusBadGateway:
 			a.env.badGatewayResponder().Generate(w, r, req)
 		default:

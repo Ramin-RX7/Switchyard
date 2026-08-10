@@ -22,6 +22,7 @@ Connection limits and timeouts are configurable at three scopes — project (top
 | `overflow` | [Overflow](#overflow) | — | no |
 | `backend_error` | [Response](#response) | — | no |
 | `not_found` | [Response](#response) | — | no |
+| `method_not_allowed` | [Response](#response) | — | no |
 
 ### `listen`
 
@@ -57,8 +58,9 @@ Defined in the `backends` array.
 | `timeouts` | [Timeouts](#timeouts) | project value | no |
 | `transport` | [Transport](#transport) | project value | no |
 | `disable_keep_alive` | bool | `false` | no |
+| `methods` | array of string | — (accepts all) | no |
 
-The last four override the project defaults for this backend; see [Connection limits & timeouts](#connection-limits--timeouts).
+The `timeouts`/`transport`/`disable_keep_alive` fields override the project defaults for this backend; see [Connection limits & timeouts](#connection-limits--timeouts).
 
 ### `id`
 
@@ -76,6 +78,12 @@ The full URL of the upstream server. Must include scheme and host (e.g. `http://
     "url": "http://127.0.0.1:9001"
 }
 ```
+
+### `methods`
+
+An optional list of HTTP method names this backend accepts (e.g. `["GET", "HEAD"]`). Matching is **case-insensitive** — config values are normalized to upper-case. Only listed methods match; there is no implicit HEAD-from-GET. When `methods` is omitted or empty, the backend accepts **any** method.
+
+Within a matched location, a request is routed only to backends whose `methods` include the request method. If a location matches but **no** backend in its pool accepts the request method, Switchyard returns **405 Method Not Allowed** — produced by the [`method_not_allowed`](#response) responder, with an `Allow` header listing the sorted union of methods the location's backends accept. See [routing.md#method-routing](routing.md#method-routing). An empty-string entry in `methods` is rejected at startup.
 
 ---
 
@@ -264,16 +272,19 @@ A location with `type: "response"` returns the canned response in its `response`
 }
 ```
 
-### `backend_error` and `not_found`
+### `backend_error`, `not_found`, and `method_not_allowed`
 
-The two top-level fields override Switchyard's built-in error responses. Each is a [Response](#response):
+These top-level fields override Switchyard's built-in error responses. Each is a [Response](#response):
 
 | Field | Triggered when | Status | Default body |
 |-------|----------------|--------|--------------|
 | `backend_error` | An upstream is unreachable, or a proxy location has an empty/no-available backend pool. | `502` | `switchyard: backend unavailable` |
 | `not_found` | No location matches the request. | `404` | `switchyard: no matching location` |
+| `method_not_allowed` | A location matched but no backend in its pool accepts the request method. | `405` | `switchyard: method not allowed` |
 
-Both are optional; omit them to keep the built-in defaults. SDK users can replace the generators entirely (`p.BadGateway` / `p.NotFound`, and `loc.Responder` for a response location) — see [extending.md](extending.md#the-pluggable-surface).
+For `method_not_allowed`, an `Allow` header is added automatically listing the sorted union of methods the matched location's backends accept (e.g. `Allow: DELETE, GET, HEAD, POST, PUT`). See [routing.md#method-routing](routing.md#method-routing).
+
+All are optional; omit them to keep the built-in defaults. SDK users can replace the generators entirely (`p.BadGateway` / `p.NotFound` / `p.MethodNotAllowed`, and `loc.Responder` for a response location) — see [extending.md](extending.md#the-pluggable-surface).
 
 ---
 
@@ -318,10 +329,15 @@ Both are optional; omit them to keep the built-in defaults. SDK users can replac
         "headers": { "Content-Type": "application/json" },
         "body": "{\"error\":\"no route\",\"path\":\"$uri\"}"
     },
+    "method_not_allowed": {
+        "status": 405,
+        "headers": { "Content-Type": "application/json" },
+        "body": "{\"error\":\"method not allowed\",\"method\":\"$request_method\",\"path\":\"$uri\"}"
+    },
 
     "backends": [
-        { "id": "api1",     "url": "http://127.0.0.1:9001", "max_connections": 100 },
-        { "id": "api2",     "url": "http://127.0.0.1:9002", "max_connections": 100, "timeouts": { "request": 10 } },
+        { "id": "api1",     "url": "http://127.0.0.1:9001", "max_connections": 100, "methods": ["GET", "HEAD"] },
+        { "id": "api2",     "url": "http://127.0.0.1:9002", "max_connections": 100, "methods": ["POST", "PUT", "DELETE"], "timeouts": { "request": 10 } },
         { "id": "frontend", "url": "http://127.0.0.1:9003", "disable_keep_alive": true }
     ],
 
@@ -377,10 +393,10 @@ Both are optional; omit them to keep the built-in defaults. SDK users can replac
 - Listens on `:8091`
 - Caps project-wide concurrency at 500 in-flight requests; on overflow, reroutes to other backends and (if all full) waits up to 2s before rejecting with a JSON `503`
 - Sets a 30s upstream request deadline and a 5s TLS-handshake timeout (project defaults)
-- Overrides the built-in `502` (`backend_error`) and `404` (`not_found`) responses with JSON bodies
+- Overrides the built-in `502` (`backend_error`), `404` (`not_found`), and `405` (`method_not_allowed`) responses with JSON bodies
 - Injects three headers into every forwarded request (global `set_headers`)
 - Logs every request to the console in a custom format (global `logging`)
-- `/api/*` — round-robin between `api1` and `api2`; adds an extra header and writes an additional log line to `api.log`
+- `/api/*` — routes by method within the pool: `GET`/`HEAD` go to `api1`, `POST`/`PUT`/`DELETE` go to `api2` (round-robin within each method's eligible backends); any other method yields `405` with `Allow: DELETE, GET, HEAD, POST, PUT`. Adds an extra header and writes an additional log line to `api.log`
 - `/media/*` — serves files from `/tmp/media`; a request to `/media/logo.png` serves `/tmp/media/logo.png`
 - `/health` — returns a canned JSON response with the request-receipt time (`type: "response"`)
 - `/*` — catch-all, forwards to `frontend`

@@ -40,17 +40,26 @@
         },
         "body": "{\"error\":\"no route\",\"path\":\"$uri\"}"
     },
+    "method_not_allowed": {
+        "status": 405,
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "body": "{\"error\":\"method not allowed\",\"method\":\"$request_method\",\"path\":\"$uri\"}"
+    },
 
     "backends": [
         {
             "id": "api1",
             "url": "http://127.0.0.1:9001",
-            "max_connections": 100
+            "max_connections": 100,
+            "methods": ["GET", "HEAD"]
         },
         {
             "id": "api2",
             "url": "http://127.0.0.1:9002",
             "max_connections": 100,
+            "methods": ["POST", "PUT", "DELETE"],
             "timeouts": {
                 "request": 10
             }

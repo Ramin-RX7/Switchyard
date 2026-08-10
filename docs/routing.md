@@ -89,6 +89,35 @@ If no `Content-Type` header is set, Switchyard defaults it to `text/plain; chars
 
 ---
 
+## Method routing
+
+Routing happens in two stages: first **path → location** (as above), then **method → backend** within the matched location's pool.
+
+Each backend may declare a `methods` list — the HTTP methods it accepts (see [config-reference.md#backend](config-reference.md#backend)). A backend with no `methods` (omitted or empty) accepts **any** method. Matching is **case-insensitive**; only listed methods match (there is no implicit HEAD-from-GET).
+
+Within a matched proxy location, the request is routed only to backends whose `methods` include the request method. Round-robin then rotates over that method-filtered subset, using the location's existing shared counter. Because the counter is shared across all methods, under interleaved methods a single method's distribution across its backends can be slightly uneven — but selection is always a valid, method-accepting backend.
+
+If a location matches but **no** backend in its pool accepts the request method, Switchyard returns **405 Method Not Allowed** — produced by the configurable [`method_not_allowed`](config-reference.md#response) responder (with a sensible default). The 405 carries an `Allow` header listing the sorted union of methods the location's backends accept.
+
+```json
+{
+    "backends": [
+        { "id": "reader", "url": "http://127.0.0.1:9001", "methods": ["GET", "HEAD"] },
+        { "id": "writer", "url": "http://127.0.0.1:9002", "methods": ["POST", "PUT", "DELETE"] }
+    ],
+    "locations": [
+        { "path": "/api/", "backends": ["reader", "writer"] }
+    ]
+}
+```
+
+For a request to `/api/...`:
+- `GET` or `HEAD` → forwarded to `reader`.
+- `POST`, `PUT`, or `DELETE` → forwarded to `writer`.
+- Any other method (e.g. `PATCH`) → **405** with `Allow: DELETE, GET, HEAD, POST, PUT`.
+
+---
+
 ## `strip_prefix` for Static Locations
 
 Before looking up a file in `root`, Switchyard strips a prefix from the incoming request path. By default (for non-regex locations), `strip_prefix` is set to the location's `path`.
@@ -137,7 +166,9 @@ For regex locations, `strip_prefix` is not set automatically and defaults to no 
 
 ## No-Match Behavior
 
-When no location matches the request path, Switchyard returns **404 Not Found**. This is the only path that produces a 404 from the routing stage. The 404 response is produced by the configurable [`not_found`](config-reference.md#response) responder (default body `switchyard: no matching location`); an unreachable/empty proxy pool produces a 502 via the [`backend_error`](config-reference.md#response) responder. Both can be overridden — see [config-reference.md#response](config-reference.md#response).
+When no location matches the request path, Switchyard returns **404 Not Found**. This is the only path that produces a 404 from the routing stage. The 404 response is produced by the configurable [`not_found`](config-reference.md#response) responder (default body `switchyard: no matching location`); an unreachable/empty proxy pool produces a 502 via the [`backend_error`](config-reference.md#response) responder.
+
+Note the distinction from **405 Method Not Allowed**: a 405 means a location *did* match on path but no backend in its pool accepts the request method (see [Method routing](#method-routing)), whereas a 404 means no location matched the path at all. All three responses can be overridden — see [config-reference.md#response](config-reference.md#response).
 
 ---
 

@@ -28,6 +28,7 @@ const DefaultListen = ":8091"
 //	Locations — the compiled location blocks; each carries its own pluggable stages
 //	NotFound  — response when no location matched (default: 404 TemplateResponder)
 //	BadGateway — response when an upstream is unreachable or a pool is empty (default: 502)
+//	MethodNotAllowed — response when no backend accepts the request method (default: 405)
 //	Transport — the shared http.RoundTripper used for all backends (tuned default)
 //	MaxInFlight — optional ceiling on concurrent requests (0 = unlimited)
 //
@@ -44,11 +45,14 @@ type Proxy struct {
 	Pool      BackendPool     // global backend pool (used only when no locations)
 	Locations []*Location
 
-	// NotFound / BadGateway generate the built-in error responses (404 when no
-	// location matched; 502 when an upstream is unreachable or a pool is empty).
-	// New wires config-driven defaults; reassign before serving to override.
-	NotFound   ResponseGenerator
-	BadGateway ResponseGenerator
+	// NotFound / BadGateway / MethodNotAllowed generate the built-in error
+	// responses (404 when no location matched; 502 when an upstream is
+	// unreachable or a pool is empty; 405 when a location matched but no backend
+	// accepts the request method). New wires config-driven defaults; reassign
+	// before serving to override.
+	NotFound         ResponseGenerator
+	BadGateway       ResponseGenerator
+	MethodNotAllowed ResponseGenerator
 
 	// Transport, when non-nil, is a global override used to reach ALL backends.
 	// By default it is nil: New builds a tuned per-backend transport from config
@@ -113,21 +117,26 @@ func New(cfg Config) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	methodNotAllowed, err := responderOf(cfg.MethodNotAllowed, http.StatusMethodNotAllowed, "switchyard: method not allowed")
+	if err != nil {
+		return nil, err
+	}
 
 	rh, rt, wt, it := cfg.serverTimeouts()
 	p := &Proxy{
-		Logger:         logger,
-		Headers:        headers,
-		Pool:           NewStaticPool(backends),
-		Selector:       &RoundRobinSelector{},
-		NotFound:       notFound,
-		BadGateway:     badGateway,
-		MaxInFlight:    ptrInt(cfg.MaxConnections, 0),
-		overflow:       overflow,
-		srvReadHeader:  rh,
-		srvReadTimeout: rt,
-		srvWriteout:    wt,
-		srvIdle:        it,
+		Logger:           logger,
+		Headers:          headers,
+		Pool:             NewStaticPool(backends),
+		Selector:         &RoundRobinSelector{},
+		NotFound:         notFound,
+		BadGateway:       badGateway,
+		MethodNotAllowed: methodNotAllowed,
+		MaxInFlight:      ptrInt(cfg.MaxConnections, 0),
+		overflow:         overflow,
+		srvReadHeader:    rh,
+		srvReadTimeout:   rt,
+		srvWriteout:      wt,
+		srvIdle:          it,
 	}
 	// Install each backend's own transport via the shim (which also records
 	// timing and honors a global Proxy.Transport override at request time), plus
@@ -168,19 +177,26 @@ func (p *Proxy) match(req Request) *Location     { return p.Router.Match(req) }
 func (p *Proxy) globalPool() []*Backend          { return p.Pool.Backends() }
 func (p *Proxy) globalSelector() BackendSelector { return p.Selector }
 
-// forwardPool returns the pool a forward may reroute within: the matched
-// location's pool, or the global pool when no location applied.
+// forwardPool returns the pool a forward may reroute within. It prefers the
+// decision's method-eligible Candidates (so reroute never lands on a backend
+// that rejects the method), falling back to the matched location's pool, or the
+// global pool when no location applied.
 func (p *Proxy) forwardPool(d Decision) []*Backend {
+	if d.Candidates != nil {
+		return d.Candidates
+	}
 	if d.Location != nil {
 		return d.Location.Pool.Backends()
 	}
 	return p.Pool.Backends()
 }
 
-// notFoundResponder / badGatewayResponder expose the global error responders to
-// DefaultActor, reading them live so overrides assigned after New take effect.
-func (p *Proxy) notFoundResponder() ResponseGenerator   { return p.NotFound }
-func (p *Proxy) badGatewayResponder() ResponseGenerator { return p.BadGateway }
+// notFoundResponder / badGatewayResponder / methodNotAllowedResponder expose the
+// global error responders to DefaultActor, reading them live so overrides
+// assigned after New take effect.
+func (p *Proxy) notFoundResponder() ResponseGenerator         { return p.NotFound }
+func (p *Proxy) badGatewayResponder() ResponseGenerator       { return p.BadGateway }
+func (p *Proxy) methodNotAllowedResponder() ResponseGenerator { return p.MethodNotAllowed }
 
 // Handler returns an http.Handler that serves the proxy. Use it to mount
 // Switchyard inside an existing server or middleware chain. When MaxInFlight is

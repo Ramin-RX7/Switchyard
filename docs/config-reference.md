@@ -27,6 +27,7 @@ Connection limits and timeouts are configurable at three scopes — project (top
 | `backends` | array of [Backend](#backend) | — | yes |
 | `locations` | array of [Location](#location) | — | no |
 | `set_headers` | object (string → string) | — | no |
+| `set_response_headers` | object (string → string) | — | no |
 | `logging` | [Logging](#logging) | — | no |
 | `max_connections` | int | `0` (unlimited) | no |
 | `timeouts` | [Timeouts](#timeouts) | — | no |
@@ -37,6 +38,8 @@ Connection limits and timeouts are configurable at three scopes — project (top
 | `not_found` | [Response](#response) | — | no |
 | `method_not_allowed` | [Response](#response) | — | no |
 | `forbidden` | [Response](#response) | — | no |
+| `whitelist` | array of string | — | no |
+| `blacklist` | array of string | — | no |
 
 ### `listen`
 
@@ -53,6 +56,10 @@ An ordered list of [Location](#location) blocks. When present, incoming requests
 ### `set_headers`
 
 A map of header names to [template](concepts.md#template) values applied to every forwarded request, before it is sent to the backend. Values may reference [variables](variables.md). See [set-headers.md](set-headers.md).
+
+### `set_response_headers`
+
+A map of header names to [template](concepts.md#template) values set on every response returned to the client — proxied, static, and Switchyard-generated alike. The mirror of [`set_headers`](#set_headers) on the response side. Values may reference [variables](variables.md). See [set-headers.md](set-headers.md#response-headers-set_response_headers).
 
 ### `logging`
 
@@ -115,6 +122,7 @@ Defined in the `locations` array.
 | `response` | [Response](#response) | — | required for `type: "response"` |
 | `strip_prefix` | string | `path` (non-regex only) | no |
 | `set_headers` | object (string → string) | — | no |
+| `set_response_headers` | object (string → string) | — | no |
 | `logging` | [Logging](#logging) | — | no |
 | `max_connections` | int | `0` (unlimited) | no |
 | `whitelist` | array of string | — | no |
@@ -160,6 +168,10 @@ Has no effect for `type: "proxy"` locations.
 
 Location-specific headers applied to forwarded requests in addition to the global `set_headers`. When the same header name appears in both global and location `set_headers`, the location value wins; all other global headers are retained. See [set-headers.md](set-headers.md).
 
+### `set_response_headers`
+
+Location-specific response headers applied in addition to the global `set_response_headers`. When the same header name appears in both, the location value wins; all other global headers are retained. See [set-headers.md](set-headers.md#response-headers-set_response_headers).
+
 ### `logging`
 
 A location-specific logger that fires in addition to (not instead of) the global logger. Both loggers receive the same request record and render independently. See [logging.md](logging.md).
@@ -170,22 +182,29 @@ Caps concurrent in-flight requests routed through this location (`0` = unlimited
 
 ### whitelist / blacklist
 
-Optional per-location IP access control. Each is an array of strings; every entry is either a single IP address or a CIDR range, IPv4 or IPv6 (e.g. `"203.0.113.7"`, `"192.0.2.0/24"`, `"2001:db8::/32"`).
+IP access control. Each is an array of strings; every entry is either a single IP address or a CIDR range, IPv4 or IPv6 (e.g. `"203.0.113.7"`, `"192.0.2.0/24"`, `"2001:db8::/32"`).
 
 - `blacklist` — client IPs/ranges that are **denied**.
 - `whitelist` — when non-empty, **only** listed IPs/ranges are allowed.
 
-**Evaluation order** (blacklist takes precedence over whitelist):
+These fields exist at **two tiers**:
+
+- **Top-level** (`whitelist`/`blacklist` on the root config) — a project-wide gate evaluated **before** location matching, so it applies to every request, including paths that match no location and configs with no locations at all.
+- **Per-location** (`whitelist`/`blacklist` on a [Location](#location)) — evaluated **right after** the location matches, before method routing and backend selection.
+
+The tiers **stack (AND)**: a request must pass the top-level gate *and* the matched location's gate. The top-level tier is checked first; if it denies, the location is never consulted.
+
+**Evaluation order** within a tier (blacklist takes precedence over whitelist):
 
 1. If the client IP is in the `blacklist` → **deny**.
 2. Otherwise, if a `whitelist` is configured (non-empty) → allow only if the IP is in it (a client address that cannot be parsed fails closed → deny).
 3. Otherwise → allow.
 
-A whitelist is enforced only when non-empty. Omitting both (or leaving both empty) means **no restriction** — every client is accepted (the default).
+A whitelist is enforced only when non-empty. Omitting both at a tier (or leaving both empty) means **no restriction** at that tier — every client is accepted (the default).
 
-The client IP is the connecting peer's address (`RemoteAddr`). If Switchyard runs behind a trusted load balancer or proxy where the real client IP is carried in `X-Forwarded-For`, the built-in check will see the load balancer's address, not the end client's. In that case supply a custom `AccessController` via the SDK that consults `X-Forwarded-For` — see [extending.md](extending.md#the-pluggable-surface).
+The client IP is the connecting peer's address (`RemoteAddr`). If Switchyard runs behind a trusted load balancer or proxy where the real client IP is carried in `X-Forwarded-For`, the built-in check will see the load balancer's address, not the end client's. In that case supply a custom `AccessController` via the SDK that consults `X-Forwarded-For` — the top-level tier is `Proxy.Access`, the per-location tier is `loc.Access` — see [extending.md](extending.md#the-pluggable-surface).
 
-When a client is denied, Switchyard returns **403 Forbidden**, produced by the configurable [`forbidden`](#backend_error-not_found-method_not_allowed-and-forbidden) responder. Access control runs after the location matches but before method routing and backend selection, so it applies to `proxy`, `static`, and `response` locations alike. See [routing.md#ip-access-control](routing.md#ip-access-control).
+When a client is denied, Switchyard returns **403 Forbidden**, produced by the configurable [`forbidden`](#backend_error-not_found-method_not_allowed-and-forbidden) responder. See [routing.md#ip-access-control](routing.md#ip-access-control).
 
 Malformed entries (an invalid IP/CIDR, or an empty string) are rejected at startup ([fail-fast](concepts.md#fail-fast)).
 
@@ -390,6 +409,11 @@ All are optional; omit them to keep the built-in defaults. SDK users can replace
         "X-Forwarded-Host":  "$host"
     },
 
+    "set_response_headers": {
+        "X-Served-By":      "switchyard",
+        "X-Request-Scheme": "$scheme"
+    },
+
     "logging": {
         "outputs": ["console"],
         "format": "{receive_time} {method} {path} backend={backend_id} status={status} dur={request_duration}"
@@ -403,6 +427,10 @@ All are optional; omit them to keep the built-in defaults. SDK users can replace
             "max_connections": 150,
             "set_headers": {
                 "X-Route": "api"
+            },
+            "set_response_headers": {
+                "X-Served-By":   "api-tier",
+                "Cache-Control": "no-store"
             },
             "logging": {
                 "outputs": ["file"],
@@ -439,8 +467,9 @@ All are optional; omit them to keep the built-in defaults. SDK users can replace
 - Sets a 30s upstream request deadline and a 5s TLS-handshake timeout (project defaults)
 - Overrides the built-in `502` (`backend_error`), `404` (`not_found`), `405` (`method_not_allowed`), and `403` (`forbidden`) responses with JSON bodies
 - Injects three headers into every forwarded request (global `set_headers`)
+- Stamps `X-Served-By` and `X-Request-Scheme` onto every response (global `set_response_headers`)
 - Logs every request to the console in a custom format (global `logging`)
-- `/api/*` — denies clients in `192.0.2.0/24` or `10.0.0.0/8` with a JSON `403` (`forbidden`) before routing; otherwise routes by method within the pool: `GET`/`HEAD` go to `api1`, `POST`/`PUT`/`DELETE` go to `api2` (round-robin within each method's eligible backends); any other method yields `405` with `Allow: DELETE, GET, HEAD, POST, PUT`. Adds an extra header and writes an additional log line to `api.log`
+- `/api/*` — denies clients in `192.0.2.0/24` or `10.0.0.0/8` with a JSON `403` (`forbidden`) before routing; otherwise routes by method within the pool: `GET`/`HEAD` go to `api1`, `POST`/`PUT`/`DELETE` go to `api2` (round-robin within each method's eligible backends); any other method yields `405` with `Allow: DELETE, GET, HEAD, POST, PUT`. Adds an extra request header, overrides `X-Served-By` to `api-tier` and adds `Cache-Control: no-store` on the response (location `set_response_headers`), and writes an additional log line to `api.log`
 - `/media/*` — serves files from `/tmp/media`; a request to `/media/logo.png` serves `/tmp/media/logo.png`
 - `/health` — returns a canned JSON response with the request-receipt time (`type: "response"`)
 - `/*` — catch-all, forwards to `frontend`

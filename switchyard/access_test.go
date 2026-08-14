@@ -124,3 +124,108 @@ func TestAccessFailFastBadEntry(t *testing.T) {
 		}
 	}
 }
+
+// --- global tier: top-level whitelist/blacklist ----------------------------
+
+// globalAccessProxy builds a proxy with a project-wide whitelist/blacklist over
+// one backend, plus the given locations (pass nil for the no-locations case).
+func globalAccessProxy(t *testing.T, whitelist, blacklist []string, locs []sw.LocationConfig) *sw.Proxy {
+	t.Helper()
+	b := newEchoBackend(t, "b")
+	return mustNew(t, sw.Config{
+		Backends:  []sw.BackendConfig{{ID: "b", URL: b.URL}},
+		Whitelist: whitelist,
+		Blacklist: blacklist,
+		Locations: locs,
+	})
+}
+
+// A global blacklist gates a request that matches a location.
+func TestGlobalBlacklistDeniesMatchedLocation(t *testing.T) {
+	p := globalAccessProxy(t, nil, []string{"10.0.0.0/8"},
+		[]sw.LocationConfig{{Path: "/", Backends: []string{"b"}}})
+	if d := decideFrom(p, "10.1.2.3:5000"); d.Action != sw.ActionReject || d.Status != http.StatusForbidden {
+		t.Errorf("blacklisted IP: action=%v status=%d, want reject/403", d.Action, d.Status)
+	}
+	if d := decideFrom(p, "8.8.8.8:5000"); d.Action != sw.ActionForward {
+		t.Errorf("non-blacklisted IP: action=%v, want forward", d.Action)
+	}
+}
+
+// The global tier gates BEFORE location matching: a blacklisted IP on a path
+// that matches no location gets 403, not 404.
+func TestGlobalBlacklistGatesBeforeMatching(t *testing.T) {
+	p := globalAccessProxy(t, nil, []string{"10.0.0.0/8"},
+		[]sw.LocationConfig{{Path: "/api/", Backends: []string{"b"}}})
+	// decideFrom uses Path "/x", which the "/api/" location does not match.
+	if d := decideFrom(p, "10.1.2.3:5000"); d.Status != http.StatusForbidden {
+		t.Errorf("blacklisted IP on unmatched path: status=%d, want 403 (not 404)", d.Status)
+	}
+	if d := decideFrom(p, "8.8.8.8:5000"); d.Status != http.StatusNotFound {
+		t.Errorf("allowed IP on unmatched path: status=%d, want 404 (no location)", d.Status)
+	}
+}
+
+// A global whitelist applies even with no locations at all (global pool path).
+func TestGlobalWhitelistNoLocations(t *testing.T) {
+	p := globalAccessProxy(t, []string{"8.8.8.8"}, nil, nil)
+	if d := decideFrom(p, "8.8.8.8:1"); d.Action != sw.ActionForward {
+		t.Errorf("whitelisted IP, no locations: action=%v, want forward", d.Action)
+	}
+	if d := decideFrom(p, "1.1.1.1:1"); d.Status != http.StatusForbidden {
+		t.Errorf("non-whitelisted IP, no locations: status=%d, want 403", d.Status)
+	}
+}
+
+// AND stacking: the global tier allows the IP, but the location's own blacklist
+// still denies it.
+func TestGlobalAllowsLocationDenies(t *testing.T) {
+	p := globalAccessProxy(t, []string{"8.8.8.8"}, nil,
+		[]sw.LocationConfig{{Path: "/", Backends: []string{"b"}, Blacklist: []string{"8.8.8.8"}}})
+	if d := decideFrom(p, "8.8.8.8:1"); d.Status != http.StatusForbidden {
+		t.Errorf("global-allowed but location-blacklisted: status=%d, want 403", d.Status)
+	}
+}
+
+// AND stacking: the global tier denies first, regardless of a permissive
+// location.
+func TestGlobalDeniesPermissiveLocation(t *testing.T) {
+	p := globalAccessProxy(t, nil, []string{"10.0.0.0/8"},
+		[]sw.LocationConfig{{Path: "/", Backends: []string{"b"}}})
+	if d := decideFrom(p, "10.1.1.1:1"); d.Status != http.StatusForbidden {
+		t.Errorf("global-blacklisted, permissive location: status=%d, want 403", d.Status)
+	}
+	if d := decideFrom(p, "8.8.8.8:1"); d.Action != sw.ActionForward {
+		t.Errorf("passes both tiers: action=%v, want forward", d.Action)
+	}
+}
+
+// Default: no global lists leaves Proxy.Access nil (unrestricted).
+func TestGlobalAccessDefaultNil(t *testing.T) {
+	p := globalAccessProxy(t, nil, nil,
+		[]sw.LocationConfig{{Path: "/", Backends: []string{"b"}}})
+	if p.Access != nil {
+		t.Errorf("Access = %v, want nil when no global lists configured", p.Access)
+	}
+}
+
+// A custom global AccessController is honored.
+func TestCustomGlobalAccessControllerHonored(t *testing.T) {
+	p := globalAccessProxy(t, nil, nil,
+		[]sw.LocationConfig{{Path: "/", Backends: []string{"b"}}})
+	p.Access = denyAll{} // override after New
+	if d := decideFrom(p, "8.8.8.8:1"); d.Status != http.StatusForbidden {
+		t.Errorf("custom global denyAll: status=%d, want 403", d.Status)
+	}
+}
+
+// Fail-fast: a malformed top-level entry errors at New.
+func TestGlobalAccessFailFastBadEntry(t *testing.T) {
+	b := newEchoBackend(t, "b")
+	if _, err := sw.New(sw.Config{
+		Backends:  []sw.BackendConfig{{ID: "b", URL: b.URL}},
+		Blacklist: []string{"nope"},
+	}); err == nil {
+		t.Error("bad top-level blacklist entry should fail New")
+	}
+}

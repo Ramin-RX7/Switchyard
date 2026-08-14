@@ -26,8 +26,8 @@ const (
 // Logging and headers, when set, stack on top of the global ones.
 //
 // The exported fields (Kind, Pool, Selector, Static, Responder, Access, Logger,
-// Headers) are overridable by SDK users after New — e.g. assign a custom Selector
-// to change this location's load balancing without touching the rest of its config.
+// Headers, ResponseHeaders) are overridable by SDK users after New — e.g. assign
+// a custom Selector to change this location's balancing without touching the rest.
 //
 // A Location must not be copied after construction: its Selector may hold an
 // atomic counter. Always pass it around as *Location.
@@ -53,8 +53,9 @@ type Location struct {
 	Access AccessController
 
 	// stacking features (nil = none for this location)
-	Logger  Logger
-	Headers HeaderApplier
+	Logger          Logger
+	Headers         HeaderApplier
+	ResponseHeaders ResponseHeaderApplier
 
 	lim *limiter // concurrency cap for this location (nil = unlimited)
 }
@@ -178,6 +179,13 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*Backend) ([]*Locat
 				return nil, fmt.Errorf("location %q: %w", c.Path, err)
 			}
 			loc.Headers = hs
+		}
+		if len(c.SetResponseHeaders) > 0 {
+			rh, err := newResponseHeaderSetter(c.SetResponseHeaders)
+			if err != nil {
+				return nil, fmt.Errorf("location %q: %w", c.Path, err)
+			}
+			loc.ResponseHeaders = rh
 		}
 
 		locs = append(locs, loc)

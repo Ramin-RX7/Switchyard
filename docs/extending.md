@@ -33,7 +33,7 @@ p.ListenAndServe(cfg.Listen)
 
 ## The pluggable surface
 
-All ten core stages are pluggable. Each is an interface with a config-driven default, assigned to an exported field on `Proxy` (global) and/or `Location` (per-location).
+All eleven core stages are pluggable. Each is an interface with a config-driven default, assigned to an exported field on `Proxy` (global) and/or `Location` (per-location).
 
 | Stage | Interface | Default | Where you set it |
 |-------|-----------|---------|------------------|
@@ -43,8 +43,9 @@ All ten core stages are pluggable. Each is an interface with a config-driven def
 | Backend selection | `BackendSelector { Select(pool []*Backend, req Request) *Backend }` | `RoundRobinSelector` | `p.Selector` (global pool), `loc.Selector` (per location) |
 | Backend list | `BackendPool { Backends() []*Backend }` | `StaticPool` | `p.Pool` (global pool), `loc.Pool` (per location) |
 | set_headers | `HeaderApplier { Apply(req Request, r *http.Request) }` | `TemplateHeaderSetter` | `p.Headers` (global), `loc.Headers` (per location) |
+| set_response_headers | `ResponseHeaderApplier { Apply(req Request, h http.Header) }` | `TemplateResponseHeaderSetter` | `p.ResponseHeaders` (global), `loc.ResponseHeaders` (per location) |
 | Media serving | `StaticServer { Serve(w, r, req Request) }` | `FileServer` | `loc.Static` (per static location) |
-| Access control | `AccessController { Allow(req Request) bool }` | `IPAccessControl` | `loc.Access` (per location; `nil` = unrestricted) |
+| Access control | `AccessController { Allow(req Request) bool }` | `IPAccessControl` | `p.Access` (global), `loc.Access` (per location); `nil` = unrestricted |
 | Response generation | `ResponseGenerator { Generate(w, r, req Request) }` | `TemplateResponder` | `loc.Responder` (response locations), `p.NotFound` / `p.BadGateway` / `p.MethodNotAllowed` / `p.Forbidden` (global error responses) |
 | Logging | `Logger { Log(rec *LogRecord); NeedsRequestBody() bool; NeedsResponseBody() bool }` | `FormatLogger` | `p.Logger` (global), `loc.Logger` (per location) |
 
@@ -52,8 +53,8 @@ All ten core stages are pluggable. Each is an interface with a config-driven def
 
 Most stages exist at two levels, matching how config stacks:
 
-- **Global** — `p.Selector`, `p.Pool`, `p.Headers`, `p.Logger`, plus the top-level `p.Decider`/`p.Actor`/`p.Router`. The global `Selector`/`Pool` are used only when no `locations` are configured.
-- **Per-location** — `loc.Selector`, `loc.Pool`, `loc.Headers`, `loc.Logger`, `loc.Static` for each entry in `p.Locations`. Each location has its own instances, so overriding one location never affects the others.
+- **Global** — `p.Selector`, `p.Pool`, `p.Headers`, `p.ResponseHeaders`, `p.Logger`, plus the top-level `p.Decider`/`p.Actor`/`p.Router`. The global `Selector`/`Pool` are used only when no `locations` are configured.
+- **Per-location** — `loc.Selector`, `loc.Pool`, `loc.Headers`, `loc.ResponseHeaders`, `loc.Logger`, `loc.Static` for each entry in `p.Locations`. Each location has its own instances, so overriding one location never affects the others.
 
 Find the location you want to customize via its configured path:
 
@@ -190,6 +191,24 @@ base, _ := p.Headers.(*sw.TemplateHeaderSetter) // nil if no set_headers in conf
 p.Headers = &withRequestID{TemplateHeaderSetter: base}
 ```
 
+**Extend set_response_headers** — the response-side mirror. Implement `ResponseHeaderApplier` to stamp headers onto the outgoing response (proxied, static, and generated alike); it is handed the response `http.Header` just before the status line is written, so it works with streaming and WebSocket upgrades. Set it globally via `p.ResponseHeaders` or per location via `loc.ResponseHeaders`; both are read **live**, so overrides after `New()` take effect. Embed the config-built `TemplateResponseHeaderSetter` to keep the configured `set_response_headers` and add your own:
+
+```go
+type withServerTiming struct {
+	*sw.TemplateResponseHeaderSetter // the config-built default (may be nil)
+}
+
+func (h *withServerTiming) Apply(req sw.Request, out http.Header) {
+	if h.TemplateResponseHeaderSetter != nil {
+		h.TemplateResponseHeaderSetter.Apply(req, out) // keep all configured set_response_headers
+	}
+	out.Set("X-Server-Timing", "sw")
+}
+
+base, _ := p.ResponseHeaders.(*sw.TemplateResponseHeaderSetter) // nil if no set_response_headers in config
+p.ResponseHeaders = &withServerTiming{TemplateResponseHeaderSetter: base}
+```
+
 **Custom backend pool** — implement `BackendPool` to feed selection a dynamic set (health-checked, service-discovery-backed). Set `p.Pool` (global) or `loc.Pool` (per location); it's called per request, so keep it cheap and concurrency-safe.
 
 **Custom response generator** — implement `ResponseGenerator` to produce Switchyard's own responses (status + headers + body). The default `TemplateResponder` is config-driven; replace it to emit richer error payloads, structured JSON, metrics, etc. Assign it globally to `p.NotFound` (no-match 404), `p.BadGateway` (backend-unavailable/empty-pool 502), `p.MethodNotAllowed` (location matched but no backend accepts the request method, 405), or `p.Forbidden` (location matched but access control denied the client, 403), or per response-location to `loc.Responder`. These fields are read **live**, so overrides after `New()` take effect. This example swaps the 502 for a JSON error:
@@ -208,7 +227,7 @@ p.BadGateway = jsonError{} // no-match 404 → p.NotFound; 405 → p.MethodNotAl
 
 (The `overflow` reject response stays config-driven; for full programmatic control over it, override the `Actor`.)
 
-**Custom access control** — implement `AccessController` to gate a location by any predicate. The built-in default (`IPAccessControl`, driven by a location's [`whitelist`/`blacklist`](config-reference.md#whitelist--blacklist)) matches on the connecting peer's `RemoteAddr`; replace it to do token checks, geo lookups, or — the common case behind a load balancer — trust the real client IP from `X-Forwarded-For`. `Allow` returns `false` to deny (Switchyard then rejects with the `forbidden` 403 responder). Assign it per location via `loc.Access` (`nil` means unrestricted):
+**Custom access control** — implement `AccessController` to gate requests by any predicate. The built-in default (`IPAccessControl`, driven by a [`whitelist`/`blacklist`](config-reference.md#whitelist--blacklist)) matches on the connecting peer's `RemoteAddr`; replace it to do token checks, geo lookups, or — the common case behind a load balancer — trust the real client IP from `X-Forwarded-For`. `Allow` returns `false` to deny (Switchyard then rejects with the `forbidden` 403 responder). Assign it **globally** via `p.Access` (checked before location matching, gating every request) or **per location** via `loc.Access` (`nil` means unrestricted at that tier); the two stack (a request must pass both). The example below gates one location; assign the same value to `p.Access` to gate the whole proxy instead:
 
 ```go
 // xffAllowlist trusts the left-most X-Forwarded-For hop and allows only a fixed set.

@@ -55,6 +55,10 @@
         "body": "{\"error\":\"forbidden\",\"ip\":\"$remote_addr\"}"
     },
 
+    "blacklist": [
+        "198.51.100.0/24"
+    ],
+
     "backends": [
         {
             "id": "api1",
@@ -84,6 +88,11 @@
         "X-Forwarded-Host": "$host"
     },
 
+    "set_response_headers": {
+        "X-Served-By": "switchyard",
+        "X-Request-Scheme": "$scheme"
+    },
+
     "logging": {
         "outputs": [
             "console"
@@ -105,6 +114,10 @@
             "max_connections": 150,
             "set_headers": {
                 "X-Route": "api"
+            },
+            "set_response_headers": {
+                "X-Served-By": "api-tier",
+                "Cache-Control": "no-store"
             },
             "logging": {
                 "outputs": [

@@ -120,17 +120,22 @@ For a request to `/api/...`:
 
 ## IP access control
 
-A location may restrict which clients reach it by IP, via two optional fields — `whitelist` and `blacklist` (see [config-reference.md#whitelist--blacklist](config-reference.md#whitelist--blacklist)). Each is an array of entries; every entry is a single IP address or a CIDR range, IPv4 or IPv6 (e.g. `"203.0.113.7"`, `"192.0.2.0/24"`, `"2001:db8::/32"`).
+Switchyard can restrict which clients are served by IP, via two optional fields — `whitelist` and `blacklist` (see [config-reference.md#whitelist--blacklist](config-reference.md#whitelist--blacklist)). Each is an array of entries; every entry is a single IP address or a CIDR range, IPv4 or IPv6 (e.g. `"203.0.113.7"`, `"192.0.2.0/24"`, `"2001:db8::/32"`).
 
-Access control is per-location and is evaluated **right after the location matches**, before method routing and backend selection — so it applies equally to `proxy`, `static`, and `response` locations. Denial is a pure routing decision; nothing is forwarded or served.
+The two fields exist at **two tiers**:
 
-**Evaluation order** (blacklist wins over whitelist):
+- **Global** (top-level `whitelist`/`blacklist`) — evaluated **before** location matching, so it gates every request, including paths that match no location and configs with no locations at all. Use it to blocklist a bad actor, or lock the whole proxy to a set of trusted networks, in one place.
+- **Per-location** (`whitelist`/`blacklist` on a location) — evaluated **right after the location matches**, before method routing and backend selection, so it applies equally to `proxy`, `static`, and `response` locations.
+
+The two tiers **stack (AND)**: a request must pass the global gate *and* the matched location's gate. The global tier is checked first; if it denies, the location is never consulted. Denial at either tier is a pure routing decision — nothing is forwarded or served.
+
+**Evaluation order** within a tier (blacklist wins over whitelist):
 
 1. If the client IP is in the `blacklist` → **deny**.
 2. Otherwise, if a non-empty `whitelist` is configured → allow only if the IP is in it (a client address that cannot be parsed fails closed → deny).
 3. Otherwise → allow.
 
-A whitelist is enforced only when non-empty. Omitting both (or leaving both empty) means every client is accepted (the default, unchanged behavior).
+A whitelist is enforced only when non-empty. Omitting both at a tier (or leaving both empty) means that tier imposes no restriction (the default, unchanged behavior).
 
 When a client is denied, Switchyard returns **403 Forbidden** — produced by the configurable [`forbidden`](config-reference.md#backend_error-not_found-method_not_allowed-and-forbidden) responder (with a sensible default). Malformed entries are rejected at startup.
 
@@ -138,6 +143,8 @@ The client IP is the connecting peer's address (`RemoteAddr`). If Switchyard sit
 
 ```json
 {
+    "blacklist": ["198.51.100.0/24"],
+
     "locations": [
         {
             "path": "/api/",
@@ -153,8 +160,9 @@ The client IP is the connecting peer's address (`RemoteAddr`). If Switchyard sit
 }
 ```
 
-- `/api/*` — every client is allowed **except** those in `192.0.2.0/24` or `10.0.0.0/8`, which get a `403`.
-- `/admin/*` — **only** clients in `203.0.113.0/24` or the single address `198.51.100.7` are allowed; everyone else gets a `403`.
+- **Global** — clients in `198.51.100.0/24` are denied a `403` everywhere, on every path, before any location is considered.
+- `/api/*` — of the clients the global tier let through, every one is allowed **except** those in `192.0.2.0/24` or `10.0.0.0/8`, which get a `403`.
+- `/admin/*` — **only** clients in `203.0.113.0/24` or the single address `198.51.100.7` are allowed; everyone else gets a `403`. (Note `198.51.100.7` is inside the globally-blacklisted `198.51.100.0/24`, so the global deny wins and it never reaches `/admin/` — a reminder that the tiers stack as AND.)
 
 ---
 

@@ -23,8 +23,10 @@ const DefaultListen = ":8091"
 //	Router   — location detection (default: DefaultRouter)
 //	Logger   — global request logger (default: FormatLogger from config, or nil)
 //	Headers  — global set_headers (default: TemplateHeaderSetter, or nil)
+//	ResponseHeaders — global set_response_headers (default: TemplateResponseHeaderSetter, or nil)
 //	Selector — backend selection for the global pool when no locations are set
 //	Pool     — the global backend pool (default: StaticPool from config)
+//	Access   — global IP access control (default: IPAccessControl from config, or nil)
 //	Locations — the compiled location blocks; each carries its own pluggable stages
 //	NotFound  — response when no location matched (default: 404 TemplateResponder)
 //	BadGateway — response when an upstream is unreachable or a pool is empty (default: 502)
@@ -37,14 +39,16 @@ const DefaultListen = ":8091"
 // BEFORE serving. Once ListenAndServe/Handler is serving, treat the Proxy as
 // immutable — mutating a field concurrently with requests is a data race.
 type Proxy struct {
-	Decider   Decider
-	Actor     Actor
-	Router    Router
-	Logger    Logger          // global logger; nil when no custom logging is configured
-	Headers   HeaderApplier   // global set_headers; nil when none configured
-	Selector  BackendSelector // global-pool selection (used only when no locations)
-	Pool      BackendPool     // global backend pool (used only when no locations)
-	Locations []*Location
+	Decider         Decider
+	Actor           Actor
+	Router          Router
+	Logger          Logger                // global logger; nil when no custom logging is configured
+	Headers         HeaderApplier         // global set_headers; nil when none configured
+	ResponseHeaders ResponseHeaderApplier // global set_response_headers; nil when none configured
+	Selector        BackendSelector       // global-pool selection (used only when no locations)
+	Pool            BackendPool           // global backend pool (used only when no locations)
+	Access          AccessController      // global IP access control; nil = unrestricted
+	Locations       []*Location
 
 	// NotFound / BadGateway / MethodNotAllowed / Forbidden generate the built-in
 	// error responses (404 when no location matched; 502 when an upstream is
@@ -103,6 +107,24 @@ func New(cfg Config) (*Proxy, error) {
 		headers = hs
 	}
 
+	var responseHeaders ResponseHeaderApplier
+	if len(cfg.SetResponseHeaders) > 0 {
+		rh, err := newResponseHeaderSetter(cfg.SetResponseHeaders)
+		if err != nil {
+			return nil, err
+		}
+		responseHeaders = rh
+	}
+
+	var access AccessController
+	if len(cfg.Whitelist) > 0 || len(cfg.Blacklist) > 0 {
+		ac, err := newIPAccessControl(cfg.Whitelist, cfg.Blacklist)
+		if err != nil {
+			return nil, err
+		}
+		access = ac
+	}
+
 	backends, err := buildBackends(cfg)
 	if err != nil {
 		return nil, err
@@ -133,8 +155,10 @@ func New(cfg Config) (*Proxy, error) {
 	p := &Proxy{
 		Logger:           logger,
 		Headers:          headers,
+		ResponseHeaders:  responseHeaders,
 		Pool:             NewStaticPool(backends),
 		Selector:         &RoundRobinSelector{},
+		Access:           access,
 		NotFound:         notFound,
 		BadGateway:       badGateway,
 		MethodNotAllowed: methodNotAllowed,
@@ -191,6 +215,7 @@ func (p *Proxy) hasLocations() bool              { return len(p.Locations) > 0 }
 func (p *Proxy) match(req Request) *Location     { return p.Router.Match(req) }
 func (p *Proxy) globalPool() []*Backend          { return p.Pool.Backends() }
 func (p *Proxy) globalSelector() BackendSelector { return p.Selector }
+func (p *Proxy) globalAccess() AccessController  { return p.Access }
 
 // forwardPool returns the pool a forward may reroute within. It prefers the
 // decision's method-eligible Candidates (so reroute never lands on a backend
@@ -301,6 +326,12 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 // shared record through every applicable logger. Otherwise it takes the fast
 // path: the built-in operational log line and a plain response writer.
 func (p *Proxy) handleRequest(w http.ResponseWriter, r *http.Request, req Request, d Decision) {
+	// Inject response headers (set_response_headers) just before the status line
+	// is written, for every action and on both the fast and logging paths.
+	if apply := p.responseHeaderFunc(req, d); apply != nil {
+		w = &responseHeaderWriter{ResponseWriter: w, apply: apply}
+	}
+
 	loggers := p.loggersFor(d)
 	if len(loggers) == 0 {
 		log.Printf("switchyard: %s -> %s", req, d)
@@ -356,4 +387,26 @@ func (p *Proxy) applyStackedHeaders(req Request, r *http.Request, loc *Location)
 	if loc != nil && loc.Headers != nil {
 		loc.Headers.Apply(req, r)
 	}
+}
+
+// applyStackedResponseHeaders is the response-side mirror of applyStackedHeaders:
+// global set_response_headers first, then the matched location's on top, so a
+// shared header name is won by the location while other globals are retained.
+func (p *Proxy) applyStackedResponseHeaders(req Request, h http.Header, loc *Location) {
+	if p.ResponseHeaders != nil {
+		p.ResponseHeaders.Apply(req, h)
+	}
+	if loc != nil && loc.ResponseHeaders != nil {
+		loc.ResponseHeaders.Apply(req, h)
+	}
+}
+
+// responseHeaderFunc returns the closure that applies the response headers for
+// this request (global stacked with the matched location's), or nil when none
+// are configured — so handleRequest only wraps the writer when needed.
+func (p *Proxy) responseHeaderFunc(req Request, d Decision) func(http.Header) {
+	if p.ResponseHeaders == nil && (d.Location == nil || d.Location.ResponseHeaders == nil) {
+		return nil
+	}
+	return func(h http.Header) { p.applyStackedResponseHeaders(req, h, d.Location) }
 }

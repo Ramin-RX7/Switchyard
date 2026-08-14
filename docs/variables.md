@@ -3,6 +3,7 @@
 Variables are nginx-style `$name` placeholders that resolve to values derived from the incoming request. They are used in:
 
 - [`set_headers`](set-headers.md) value templates — e.g. `"X-Real-IP": "$remote_addr"`
+- [`set_response_headers`](set-headers.md#response-headers-set_response_headers) value templates — e.g. `"X-Request-Scheme": "$scheme"`
 - [Log format](logging.md) strings via the `{var.NAME}` field — e.g. `{var.remote_addr}`
 - [`response` location](routing.md) bodies and headers — e.g. `"body": "{\"time\":\"$time_iso8601\"}"`
 - The `backend_error`, `not_found`, and `overflow` [response](config-reference.md#response) bodies and headers
@@ -76,6 +77,7 @@ Variable names are validated when the configuration is compiled. Any unknown var
 Variables are available in:
 
 - `set_headers` value templates
+- `set_response_headers` value templates
 - the `{var.NAME}` placeholder in log format strings
 - `response` location bodies and headers
 - the `backend_error`, `not_found`, and `overflow` response bodies and headers

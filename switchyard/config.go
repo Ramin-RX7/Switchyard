@@ -100,6 +100,10 @@ type Config struct {
 	// forwarded to backends, like nginx's proxy_set_header. Values may contain
 	// $variables (see vars.go), e.g. {"X-Real-IP": "$remote_addr"}.
 	SetHeaders map[string]string `json:"set_headers"`
+	// SetResponseHeaders is the response-side mirror of SetHeaders: header names
+	// to value templates set on the response returned to the client. Values may
+	// contain the same $variables, e.g. {"X-Served-By": "switchyard"}.
+	SetResponseHeaders map[string]string `json:"set_response_headers"`
 	// Locations is an optional ordered list of nginx-style location blocks.
 	Locations []LocationConfig `json:"locations"`
 
@@ -125,6 +129,16 @@ type Config struct {
 	// Forbidden overrides the built-in 403 response returned when a location's
 	// access control denies the client. When nil, a sensible default is used.
 	Forbidden *ResponseConfig `json:"forbidden"`
+
+	// Whitelist / Blacklist restrict access to the whole proxy by client IP, the
+	// project-wide tier of the per-location lists (see LocationConfig). Each entry
+	// is a single IP or a CIDR range (IPv4 or IPv6). A blacklisted IP is denied;
+	// when a whitelist is set, only listed IPs are allowed. Empty = no global
+	// restriction. Enforced before location matching by the global
+	// AccessController (Proxy.Access); it stacks with a location's own lists, so a
+	// request must pass both tiers.
+	Whitelist []string `json:"whitelist"`
+	Blacklist []string `json:"blacklist"`
 }
 
 // LocationConfig describes one location block. Path is matched as a prefix
@@ -134,15 +148,16 @@ type Config struct {
 // Logging and SetHeaders are optional and stack with the global ones rather than
 // replacing them.
 type LocationConfig struct {
-	Path        string            `json:"path"`
-	Regex       bool              `json:"regex"`
-	Type        string            `json:"type"`         // "proxy" (default), "static", or "response"
-	Backends    []string          `json:"backends"`     // backend ids, for type "proxy"
-	Root        string            `json:"root"`         // directory, for type "static"
-	StripPrefix *string           `json:"strip_prefix"` // nil distinguishes unset from ""
-	Response    *ResponseConfig   `json:"response"`     // generated response, for type "response"
-	Logging     *LogConfig        `json:"logging"`
-	SetHeaders  map[string]string `json:"set_headers"`
+	Path               string            `json:"path"`
+	Regex              bool              `json:"regex"`
+	Type               string            `json:"type"`         // "proxy" (default), "static", or "response"
+	Backends           []string          `json:"backends"`     // backend ids, for type "proxy"
+	Root               string            `json:"root"`         // directory, for type "static"
+	StripPrefix        *string           `json:"strip_prefix"` // nil distinguishes unset from ""
+	Response           *ResponseConfig   `json:"response"`     // generated response, for type "response"
+	Logging            *LogConfig        `json:"logging"`
+	SetHeaders         map[string]string `json:"set_headers"`
+	SetResponseHeaders map[string]string `json:"set_response_headers"`
 	// Whitelist / Blacklist restrict access to this location by client IP. Each
 	// entry is a single IP or a CIDR range (IPv4 or IPv6). A blacklisted IP is
 	// denied; when a whitelist is set, only listed IPs are allowed. Empty = no

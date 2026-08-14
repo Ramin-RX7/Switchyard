@@ -18,7 +18,7 @@ After a request's path matches a location, Switchyard also selects the backend b
 
 ## Access Control
 
-Per-location restriction of clients by IP. A location may declare a `whitelist` and/or a `blacklist`, each a list of single IPs or CIDR ranges (IPv4 or IPv6). Evaluation is **blacklist-first, then whitelist**: a blacklisted IP is denied; otherwise, if a non-empty whitelist is configured, only listed IPs are allowed (an unparseable client address fails closed); otherwise the client is allowed. Empty/omitted lists mean no restriction. Access control is evaluated in the routing stage right after the location matches — before method routing and backend selection — so it applies to `proxy`, `static`, and `response` locations. A denied client is rejected with **403 Forbidden** (still an `ActionReject`), produced by the configurable `forbidden` [Response Generator](#response-generator). The built-in check uses the connecting peer's address (`RemoteAddr`); SDK users can supply any `AccessController` (e.g. `X-Forwarded-For`-aware, token, or geo checks). See [routing.md#ip-access-control](routing.md#ip-access-control) and [extending.md](extending.md#the-pluggable-surface).
+Restriction of clients by IP, at **two tiers**: a project-wide top-level `whitelist`/`blacklist`, and a per-location `whitelist`/`blacklist`. Each is a list of single IPs or CIDR ranges (IPv4 or IPv6). Within a tier, evaluation is **blacklist-first, then whitelist**: a blacklisted IP is denied; otherwise, if a non-empty whitelist is configured, only listed IPs are allowed (an unparseable client address fails closed); otherwise the client is allowed. Empty/omitted lists mean no restriction at that tier. The two tiers **stack (AND)** — a request must pass both. The global tier is evaluated first, before location matching (so it also gates paths that match no location); the per-location tier is evaluated in the routing stage right after the location matches — before method routing and backend selection — so it applies to `proxy`, `static`, and `response` locations. A denied client is rejected with **403 Forbidden** (still an `ActionReject`), produced by the configurable `forbidden` [Response Generator](#response-generator). The built-in check uses the connecting peer's address (`RemoteAddr`); SDK users can supply any `AccessController` — `Proxy.Access` (global) or `loc.Access` (per-location) — e.g. `X-Forwarded-For`-aware, token, or geo checks. See [routing.md#ip-access-control](routing.md#ip-access-control) and [extending.md](extending.md#the-pluggable-surface).
 
 ## Decision
 
@@ -39,11 +39,11 @@ The immutable internal `Request` value captured at the very start of every reque
 
 ## Variable
 
-An nginx-style `$name` placeholder that resolves to a value derived from the request snapshot at runtime. Variables can be referenced in `set_headers` value templates and in log format strings (via `{var.NAME}`). All available variables are listed in [variables.md](variables.md).
+An nginx-style `$name` placeholder that resolves to a value derived from the request snapshot at runtime. Variables can be referenced in `set_headers` and `set_response_headers` value templates, in generated-response bodies/headers, and in log format strings (via `{var.NAME}`). All available variables are listed in [variables.md](variables.md).
 
 ## Template
 
-A string that contains one or more variable references. Templates support two syntaxes: `$name` and `${name}`. They are compiled once at startup; an unknown variable name causes Switchyard to exit immediately rather than producing silently wrong output at runtime. Templates are used in `set_headers` values.
+A string that contains one or more variable references. Templates support two syntaxes: `$name` and `${name}`. They are compiled once at startup; an unknown variable name causes Switchyard to exit immediately rather than producing silently wrong output at runtime. Templates are used in `set_headers` and `set_response_headers` values, generated-response bodies/headers, and log formats.
 
 ## Response Generator
 
@@ -59,6 +59,7 @@ The behavior where location-level settings *augment* global settings rather than
 
 - A matched request fires **both** the global logger and the location's own logger (if each is configured). Neither overrides the other.
 - A matched request has global `set_headers` applied first, then the location's `set_headers` on top. When the same header name appears in both, the location value wins; all other global headers are retained.
+- `set_response_headers` stacks the same way on the response side: global applied first, then the location's on top; on a shared header name the location wins, all other global headers retained.
 
 Stacking means global configuration is a baseline that every request goes through. Location configuration adds to it for matched requests.
 

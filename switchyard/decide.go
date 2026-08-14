@@ -35,12 +35,19 @@ type routingEnv interface {
 	match(req Request) *Location
 	globalPool() []*Backend
 	globalSelector() BackendSelector
+	globalAccess() AccessController
 }
 
 // Decide implements Decider. It performs matching and an atomic counter
 // increment only — no I/O and no forwarding.
 func (d *DefaultDecider) Decide(req Request) Decision {
 	e := d.env
+	// Global access control gates every request before location matching, so it
+	// applies to matched, unmatched, and no-locations paths alike. A matched
+	// location's own AccessController still runs below, so both tiers must allow.
+	if ac := e.globalAccess(); ac != nil && !ac.Allow(req) {
+		return Decision{Action: ActionReject, Reason: "forbidden", Status: http.StatusForbidden}
+	}
 	if e.hasLocations() {
 		loc := e.match(req)
 		if loc == nil {

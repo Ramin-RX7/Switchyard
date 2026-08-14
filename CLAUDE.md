@@ -38,8 +38,13 @@ Full feature documentation is in [`docs/`](docs/):
 | [docs/variables.md](docs/variables.md) | All `$variable` placeholders and where they can be used |
 | [docs/set-headers.md](docs/set-headers.md) | Header injection, variable syntax, `Host` special case, stacking |
 | [docs/logging.md](docs/logging.md) | Format fields, outputs, body capture, `loggingTransport`, `statusWriter` |
-| [docs/extending.md](docs/extending.md) | SDK usage — overriding any of the 9 pluggable stages with your own code |
+| [docs/extending.md](docs/extending.md) | SDK usage — overriding any of the 11 pluggable stages with your own code |
 | [docs/testing.md](docs/testing.md) | Test suite layout, per-stage testing patterns, and the tests-required contributor rule |
+| [docs/features.md](docs/features.md) | Running inventory of every implemented feature (⚙️ Config / 🧩 SDK), plus the pluggable-stage matrix |
+
+**Keep [docs/features.md](docs/features.md) in sync:** every new feature MUST be added there, in the same format as the existing entries — a numbered `##` section with a one-paragraph description plus **⚙️ Config** (JSON keys) and **🧩 SDK** (interface, default, override field) lines; add a row to that file's pluggable-stages table when the feature introduces a new stage.
+
+**Keep [README.md](README.md) in sync:** every new feature MUST also get a one-line bullet in the README's **Features** list (and, if it adds a new pluggable stage, keep the stage count accurate). The README is the front-page summary; [docs/features.md](docs/features.md) is the full inventory — both must reflect a newly introduced feature.
 
 ## Architecture
 
@@ -63,6 +68,7 @@ See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, 
 - Adding a new action type: constant in `decision.go` → case in `DefaultDecider.Decide` → case in `DefaultActor.Act`.
 - Behavior parity: `New(cfg)` must reproduce the turnkey binary's behavior exactly; overrides are additive.
 - Tests required: behavior changes ship with tests (flow + default + custom override); run `go test ./...`. See [docs/testing.md](docs/testing.md).
+- Feature inventory: a new feature ships with an entry in [docs/features.md](docs/features.md), same format as the others (⚙️ Config / 🧩 SDK), plus a pluggable-stages table row if it adds a stage, AND a one-line bullet in the [README.md](README.md) Features list.
 
 ## Feature Quick-Reference
 

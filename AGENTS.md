@@ -88,6 +88,11 @@ Feature documentation lives in [`docs/`](docs/). Every feature has its own docum
 - [`docs/concepts.md`](docs/concepts.md) — definitions of all terms used in the codebase and config
 - [`docs/architecture.md`](docs/architecture.md) — the three-stage pipeline and the rules for extending it
 - [`docs/config-reference.md`](docs/config-reference.md) — every configuration field
+- [`docs/features.md`](docs/features.md) — the running inventory of every implemented feature
+
+**Keep [`docs/features.md`](docs/features.md) in sync:** every new feature MUST be added there, in the same format as the existing entries — a numbered `##` section with a one-paragraph description followed by two lines, **⚙️ Config** (the JSON keys) and **🧩 SDK** (the interface, its default, and the `Proxy`/`Location` field to override). If the feature introduces a new pluggable stage, also add a row to that file's pluggable-stages table.
+
+**Keep [`README.md`](README.md) in sync:** every new feature MUST also get a one-line bullet in the README's **Features** list (and, when it adds a new pluggable stage, keep the stage count accurate). The README is the project's front-page summary; `docs/features.md` is the full inventory — a newly introduced feature must appear in both.
 
 ---
 

@@ -2,23 +2,28 @@
 
 An HTTP reverse proxy and API gateway written in Go.
 
-Switchyard sits in front of your backend services and routes incoming traffic to them — forwarding requests, load-balancing across pools, serving static files, injecting headers, and writing structured access logs. Configuration is a single JSON file, reloadable in-process without dropping connections.
+Switchyard sits in front of your backend services and routes incoming traffic to them — forwarding requests, load-balancing across pools, routing by path and HTTP method, gating clients by IP, serving static files, generating its own responses, injecting request and response headers, applying connection limits and timeouts, and writing structured access logs. Configuration is a single JSON file, reloadable in-process without dropping connections. For a complete, always-current inventory see [docs/features.md](docs/features.md).
 
 ---
 
 ## Features
 
-- **Reverse proxy** — forwards HTTP requests to upstream backends via `httputil.ReverseProxy`
+- **Reverse proxy** — forwards HTTP requests to upstream backends via `httputil.ReverseProxy`, with automatic `X-Forwarded-For`
 - **Load balancing** — round-robin across backend pools (global or per-location), lock-free with atomic counters
-- **Location routing** — nginx-style ordered location blocks with prefix or Go regexp path matching
+- **Location routing** — nginx-style ordered location blocks with prefix or Go regexp path matching, first-match-wins
+- **Method-based routing** — route by HTTP method; backends declare accepted `methods`, unmatched → configurable **405** with an `Allow` header
+- **IP access control** — `whitelist` / `blacklist` (single IP or CIDR, IPv4/IPv6) at two tiers — project-wide (global) and per-location — stacking as AND; denial → configurable **403**
 - **Static file serving** — serve a local directory from any location path, with automatic prefix stripping
-- **Header injection** — inject or override request headers before forwarding, with variable substitution
-- **Request variables** — nginx-style `$variable` placeholders (`$remote_addr`, `$scheme`, `$host`, `$http_*`, and more)
-- **Custom logging** — structured log lines with a user-defined format, parameterized fields, and optional body capture
-- **Multiple log outputs** — write to console, file, or both; stacked global and per-location loggers
-- **Fail-fast validation** — all configuration errors (unknown variables, bad regexes, missing backends) are caught at startup
+- **Response generation** — Switchyard-produced responses (status + headers + body with variables) for a `type: "response"` location and every built-in error response (**502** / **404** / **405** / **403** / overflow), each individually overridable
+- **Request header injection** — inject or override request headers before forwarding, with variable substitution
+- **Response header injection** — set headers on the client response (proxied, static, generated) with the same variables; streaming- and WebSocket-safe
+- **Request variables** — nginx-style `$variable` placeholders (`$remote_addr`, `$scheme`, `$host`, `$http_*`, `$time_iso8601`, and more)
+- **Connection limits & overflow** — concurrent-in-flight caps nested at project / location / backend scopes, with configurable overflow behavior (`reject` / `queue` / `reroute`)
+- **Timeouts & transport tuning** — upstream and client-facing timeouts plus keep-alive pool tuning, at project and per-backend scope
+- **Custom logging** — structured log lines with a user-defined format, parameterized fields, optional body capture, and multiple outputs (console / file / both); stacked global and per-location loggers
+- **Fail-fast validation** — all configuration errors (unknown variables, bad regexes, missing backends, bad IP ranges) are caught at startup
 - **Zero-downtime reload** — `switchyard reload [--force]` swaps the config in-process without restarting or dropping connections; an invalid new config is rejected and the running one keeps serving
-- **Usable two ways** — run the turnkey binary with just a JSON config (nginx-style), or import it as a Go **SDK** and override any pipeline stage (routing, backend selection, logging, …) with your own code — no forking. See [docs/extending.md](docs/extending.md)
+- **Usable two ways** — run the turnkey binary with just a JSON config (nginx-style), or import it as a Go **SDK** and override any of the **11 pluggable stages** (routing, backend selection, access control, response generation, logging, …) with your own code — no forking. See [docs/extending.md](docs/extending.md)
 
 ---
 
@@ -124,12 +129,14 @@ Full reference documentation is in the [`docs/`](docs/) directory:
 
 | Document | Description |
 |----------|-------------|
+| [docs/features.md](docs/features.md) | Complete inventory of every implemented feature (⚙️ Config / 🧩 SDK) |
 | [docs/concepts.md](docs/concepts.md) | Glossary — what every term means |
 | [docs/architecture.md](docs/architecture.md) | The three-stage request pipeline |
 | [docs/config-reference.md](docs/config-reference.md) | Every configuration field documented |
 | [docs/backends.md](docs/backends.md) | Backend setup, round-robin, error handling |
-| [docs/routing.md](docs/routing.md) | Location routing, prefix/regex matching, static serving |
+| [docs/routing.md](docs/routing.md) | Location routing, prefix/regex matching, method routing, IP access control, static serving |
 | [docs/variables.md](docs/variables.md) | All available `$variable` placeholders |
-| [docs/set-headers.md](docs/set-headers.md) | Header injection with variable substitution |
+| [docs/set-headers.md](docs/set-headers.md) | Request and response header injection with variable substitution |
 | [docs/logging.md](docs/logging.md) | Log format, fields, outputs, body capture |
-| [docs/extending.md](docs/extending.md) | Using Switchyard as an SDK — override pipeline stages in your own Go code |
+| [docs/extending.md](docs/extending.md) | Using Switchyard as an SDK — override any of the 11 pluggable stages in your own Go code |
+| [docs/testing.md](docs/testing.md) | Test-suite layout, per-stage testing patterns, and the tests-required rule |

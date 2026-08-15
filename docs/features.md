@@ -107,7 +107,14 @@ In-process atomic Proxy swap. **Graceful:** in-flight requests finish on the old
 The entire config is validated before serving (a bad URL, regex, static root, variable, duration, or negative limit exits immediately). On `SIGINT` / `SIGTERM` the server stops accepting and drains in-flight requests (15s) before exiting, and removes the pid file.
 
 - **⚙️ Config:** implicit (every field is validated).
-- **🧩 SDK:** `Actor` (default `DefaultActor`) for retries/response rewriting; mount via `Handler()` in your own server and call `srv.Shutdown` yourself.
+- **🧩 SDK:** `Actor` (default `DefaultActor`) for response rewriting; mount via `Handler()` in your own server and call `srv.Shutdown` yourself.
+
+## 15. Retry / reroute on failure
+
+Retries a failed forward on another backend. Three triggers: a **connection error** (backend down — any method), an upstream **status in a configurable list** (idempotent methods only unless opted in), and a backend flagged **unhealthy** (excluded from selection). Retries happen only before any byte reaches the client, so streaming and WebSocket upgrades are unaffected. Reselection continues through the location's normal selector (the failed backend rotates to the back of the round-robin and may be reselected by default; `retry_same_backend: false` forces distinct backends). Backoff is `none` / `constant` / `exponential` with optional full jitter. On exhaustion the real final upstream response passes through (or connection exhaustion renders `backend_error` 502), unless a `retry.response` is configured. Body replay is bounded by `max_body_bytes`. Global + per-location, **field-merged** (each set field wins, unset inherits).
+
+- **⚙️ Config:** `retry` (top-level + per-location): `attempts`, `on_connection_error`, `on_status`, `retry_non_idempotent`, `retry_same_backend`, `skip_unhealthy`, `max_body_bytes`, `backoff` (`strategy`, `base_ms`, `max_ms`, `jitter`), `response`.
+- **🧩 SDK:** built into `DefaultActor` (default behavior; override `p.Actor` to replace). Backend health hook `Backend.SetHealthy(bool)` / `Backend.Healthy()`; a `retries` log field records retries performed. No new pluggable stage.
 
 ---
 

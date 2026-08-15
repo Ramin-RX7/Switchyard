@@ -34,6 +34,7 @@ Connection limits and timeouts are configurable at three scopes — project (top
 | `transport` | [Transport](#transport) | — | no |
 | `server` | [Server](#server) | — | no |
 | `overflow` | [Overflow](#overflow) | — | no |
+| `retry` | [Retry](#retry) | — | no |
 | `backend_error` | [Response](#response) | — | no |
 | `not_found` | [Response](#response) | — | no |
 | `method_not_allowed` | [Response](#response) | — | no |
@@ -125,6 +126,7 @@ Defined in the `locations` array.
 | `set_response_headers` | object (string → string) | — | no |
 | `logging` | [Logging](#logging) | — | no |
 | `max_connections` | int | `0` (unlimited) | no |
+| `retry` | [Retry](#retry) | — | no (field-merged over the global `retry`) |
 | `whitelist` | array of string | — | no |
 | `blacklist` | array of string | — | no |
 
@@ -297,6 +299,58 @@ What happens when a `max_connections` cap (any scope) is reached. Project-wide.
 - `reroute` — when the selected **backend** is full, try the other backends in the matched pool; if all are full, fall back to `queue_timeout` (if set) then reject. (The location and project caps have no alternates, so they use the queue/reject fallback.)
 
 > For full control over the over-capacity response, an SDK user can override the `Actor`; for capacity-aware distribution (rather than reroute-on-overflow), a custom `BackendSelector` can route by `Backend.MaxConns`/`InFlight` — see [extending.md](extending.md#concurrency--tuning) and [`examples/least-loaded`](../examples/least-loaded/main.go).
+
+---
+
+## Retry
+
+Retries a failed forward on another backend. Available at the **top level** and **per-location** (`locations[].retry`); a location's block is **field-merged** over the global one — each field set on the location wins, every unset field inherits the global value (or the built-in default). Distinct from [Overflow](#overflow) `reroute`, which reacts to capacity, not failure.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `attempts` | int | `0` | Number of retries **beyond** the first try. `0` (default) disables retry. |
+| `on_connection_error` | bool | `true` | Retry when the backend is unreachable / resets. Applies to **any** HTTP method. |
+| `on_status` | array of int | `[]` | Upstream status codes that trigger a retry. Idempotent methods only, unless `retry_non_idempotent`. |
+| `retry_non_idempotent` | bool | `false` | Allow status-based retry of non-idempotent methods (POST/PATCH). |
+| `retry_same_backend` | bool | `true` | `true`: normal selection, the just-tried backend may be reselected. `false`: exclude already-tried backends. |
+| `skip_unhealthy` | bool | `true` | Exclude backends flagged unhealthy (`Backend.SetHealthy(false)`). Falls back to the full set if all are unhealthy. |
+| `max_body_bytes` | int | `1048576` | Cap for buffering the request body for replay; a larger body makes the request single-attempt. |
+| `backoff` | [Backoff](#backoff) | see below | Inter-attempt delay policy. |
+| `response` | [Response](#response) | — | Optional response returned when retries are exhausted (see below). |
+
+**Triggers.** A retry fires on any of: (1) a connection error (`on_connection_error`); (2) an upstream status in `on_status` (subject to the idempotency gate); (3) selection skipping an unhealthy backend (`skip_unhealthy`). The health flag itself is set via the SDK hook `Backend.SetHealthy(bool)` (a config-driven health checker is a separate feature).
+
+**On exhaustion.** When retries run out, the client receives — by default — the real final upstream response (e.g. the actual `503`); if every attempt was a connection error (no response), the [`backend_error`](#backend_error-not_found-method_not_allowed-and-forbidden) `502` is rendered. Set `retry.response` to override either with a Switchyard-generated response (status + headers + body, with [variables](variables.md)).
+
+Retries occur only before any byte reaches the client, so streaming and WebSocket upgrades are unaffected. The number of retries performed is available as the `{retries}` [log field](logging.md).
+
+### Backoff
+
+The delay between attempts. `delay(n)` is the wait before retry number `n` (`n = 1` for the first retry); with `jitter`, the computed delay `d` is replaced by a uniform random value in `[0, d]` (full jitter).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `strategy` | string | `"exponential"` | `"none"`, `"constant"`, or `"exponential"` (see below). |
+| `base_ms` | int (ms) | `50` | Base delay in milliseconds. |
+| `max_ms` | int (ms) | `2000` | Maximum delay (caps `"exponential"`). |
+| `jitter` | bool | `true` | Apply full jitter to the computed delay. |
+
+**Strategies:**
+- `none` — retry immediately, no wait. `base_ms` / `max_ms` / `jitter` are ignored.
+- `constant` — wait `base_ms` before every retry. `max_ms` is ignored.
+- `exponential` — wait `min(max_ms, base_ms · 2^(n-1))` before retry `n`.
+
+```json
+{
+    "retry": {
+        "attempts": 2,
+        "on_connection_error": true,
+        "on_status": [502, 503, 504],
+        "retry_same_backend": false,
+        "backoff": { "strategy": "exponential", "base_ms": 50, "max_ms": 2000, "jitter": true }
+    }
+}
+```
 
 ---
 

@@ -74,6 +74,7 @@ type Proxy struct {
 
 	// resolved config-derived settings (set in New).
 	overflow       overflowPolicy
+	retry          retryPolicy
 	srvReadHeader  time.Duration
 	srvReadTimeout time.Duration
 	srvWriteout    time.Duration
@@ -134,6 +135,10 @@ func New(cfg Config) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	retry, err := cfg.retryPolicy()
+	if err != nil {
+		return nil, err
+	}
 	badGateway, err := responderOf(cfg.BackendError, http.StatusBadGateway, "switchyard: backend unavailable")
 	if err != nil {
 		return nil, err
@@ -165,6 +170,7 @@ func New(cfg Config) (*Proxy, error) {
 		Forbidden:        forbidden,
 		MaxInFlight:      ptrInt(cfg.MaxConnections, 0),
 		overflow:         overflow,
+		retry:            retry,
 		srvReadHeader:    rh,
 		srvReadTimeout:   rt,
 		srvWriteout:      wt,
@@ -177,7 +183,27 @@ func New(cfg Config) (*Proxy, error) {
 	for _, b := range backends {
 		b := b
 		b.proxy.Transport = &proxyTransport{p: p, base: b.transport}
+		// ModifyResponse converts a retryable upstream status into an error so the
+		// response is discarded (nothing written to the client) and ErrorHandler
+		// runs — the idiomatic pre-body-write retry hook. A no-op when the request
+		// carries no retryState (retry disabled for its scope).
+		b.proxy.ModifyResponse = func(resp *http.Response) error {
+			if st, ok := resp.Request.Context().Value(retryKey).(*retryState); ok {
+				return st.onResponse(resp.StatusCode)
+			}
+			return nil
+		}
 		b.proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			// A retry-active request routes every outcome through its retryState;
+			// the Actor loop owns all client writes, so record and return here.
+			if st, ok := r.Context().Value(retryKey).(*retryState); ok {
+				if context.Cause(r.Context()) == errReloading {
+					st.outcome = outcomeTerminalReload
+					return
+				}
+				st.onError(err)
+				return
+			}
 			if context.Cause(r.Context()) == errReloading {
 				// The request was aborted by a force reload, not a backend
 				// failure — report 503 (best-effort; a response already
@@ -195,7 +221,7 @@ func New(cfg Config) (*Proxy, error) {
 		for _, b := range backends {
 			byID[b.ID] = b
 		}
-		locs, err := compileLocations(cfg.Locations, byID)
+		locs, err := compileLocations(cfg.Locations, byID, cfg.Retry)
 		if err != nil {
 			return nil, err
 		}
@@ -203,7 +229,7 @@ func New(cfg Config) (*Proxy, error) {
 	}
 
 	p.Router = &DefaultRouter{Locations: p.Locations}
-	p.Actor = &DefaultActor{env: p, overflow: p.overflow}
+	p.Actor = &DefaultActor{env: p, overflow: p.overflow, retry: p.retry}
 	p.Decider = &DefaultDecider{env: p}
 	return p, nil
 }
@@ -229,6 +255,16 @@ func (p *Proxy) forwardPool(d Decision) []*Backend {
 		return d.Location.Pool.Backends()
 	}
 	return p.Pool.Backends()
+}
+
+// forwardSelector returns the BackendSelector a forward reselects with on retry:
+// the matched location's, or the global one when no location applied. Read live
+// so SDK overrides of p.Selector / loc.Selector take effect.
+func (p *Proxy) forwardSelector(d Decision) BackendSelector {
+	if d.Location != nil {
+		return d.Location.Selector
+	}
+	return p.Selector
 }
 
 // notFoundResponder / badGatewayResponder / methodNotAllowedResponder expose the

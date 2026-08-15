@@ -6,6 +6,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +23,18 @@ type Backend struct {
 	lim            *limiter            // concurrency cap (nil = unlimited)
 	requestTimeout time.Duration       // per-request upstream deadline (0 = none)
 	methods        map[string]struct{} // accepted HTTP methods, upper-cased (nil/empty = all)
+	healthy        atomic.Bool         // liveness flag; retry's skip_unhealthy excludes false
 }
+
+// Healthy reports whether this backend is currently considered healthy. New
+// backends start healthy. The retry stage's skip_unhealthy excludes unhealthy
+// backends from selection.
+func (b *Backend) Healthy() bool { return b.healthy.Load() }
+
+// SetHealthy sets this backend's health flag. It is the hook a health checker
+// (config-driven or an SDK-supplied prober) toggles; the flag is read live by the
+// retry stage. Safe for concurrent use.
+func (b *Backend) SetHealthy(v bool) { b.healthy.Store(v) }
 
 // Accepts reports whether this backend serves the given HTTP method. A backend
 // with no configured methods accepts every method. Matching is
@@ -93,6 +105,7 @@ func buildBackends(cfg Config) ([]*Backend, error) {
 			requestTimeout: s.requestTimeout,
 			methods:        methods,
 		}
+		b.healthy.Store(true) // backends start healthy
 		// The ErrorHandler for backend failures (unreachable host, reset
 		// connection, etc.) is installed by New once the Proxy exists, so it can
 		// route through the configurable p.BadGateway responder.

@@ -19,6 +19,7 @@ Switchyard sits in front of your backend services and routes incoming traffic to
 - **Response header injection** — set headers on the client response (proxied, static, generated) with the same variables; streaming- and WebSocket-safe
 - **Request variables** — nginx-style `$variable` placeholders (`$remote_addr`, `$scheme`, `$host`, `$http_*`, `$time_iso8601`, and more)
 - **Connection limits & overflow** — concurrent-in-flight caps nested at project / location / backend scopes, with configurable overflow behavior (`reject` / `queue` / `reroute`)
+- **Retry / reroute on failure** — retry a failed forward on another backend on a connection error, a configurable response-status list, or an unhealthy backend, with idempotency-aware safety, `none`/`constant`/`exponential` backoff (+ jitter), and field-merged global/per-location policy
 - **Timeouts & transport tuning** — upstream and client-facing timeouts plus keep-alive pool tuning, at project and per-backend scope
 - **Custom logging** — structured log lines with a user-defined format, parameterized fields, optional body capture, and multiple outputs (console / file / both); stacked global and per-location loggers
 - **Fail-fast validation** — all configuration errors (unknown variables, bad regexes, missing backends, bad IP ranges) are caught at startup

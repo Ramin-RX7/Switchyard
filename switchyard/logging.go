@@ -119,6 +119,7 @@ type LogRecord struct {
 	AppStatus    int // status returned by the backend, 0 if none
 	Status       int // status returned to the client
 	RespHeader   http.Header
+	Retries      int // number of retries performed before the final attempt (0 if none)
 }
 
 // --- format compilation -----------------------------------------------------
@@ -144,6 +145,7 @@ type logFormat struct {
 //
 //	method, url, path, request_body, response_body
 //	backend_id        id of the selected backend
+//	retries           number of retries before the final attempt
 //	status            response status sent to the client
 //	app_status        status returned by the backend
 //	receive_time      request received from the client
@@ -192,7 +194,7 @@ func compileFormat(format string) (*logFormat, error) {
 func validateField(field, param string) error {
 	switch field {
 	case "method", "url", "path", "request_body", "response_body", "backend_id",
-		"status", "app_status",
+		"retries", "status", "app_status",
 		"receive_time", "forward_time", "app_response_time", "end_time",
 		"request_duration", "app_duration":
 		if param != "" {
@@ -249,6 +251,8 @@ func renderField(rec *LogRecord, field, param string) string {
 			return absent
 		}
 		return rec.Backend.ID
+	case "retries":
+		return strconv.Itoa(rec.Retries)
 	case "status":
 		return statusString(rec.Status)
 	case "app_status":
@@ -334,7 +338,9 @@ func anyNeedsResponseBody(ls []Logger) bool {
 }
 
 // captureBody reads the request body into rec and restores it so the backend
-// still receives the full body. Used only when the log format references it.
+// still receives the full body. Used only when the log format references it. It
+// also sets r.GetBody so a subsequent retry can replay the body without a second
+// read.
 func captureBody(r *http.Request, rec *LogRecord) {
 	if r.Body == nil {
 		return
@@ -345,6 +351,9 @@ func captureBody(r *http.Request, rec *LogRecord) {
 		return
 	}
 	rec.RequestBody = data
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
 	r.Body = io.NopCloser(bytes.NewReader(data))
 }
 

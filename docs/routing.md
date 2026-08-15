@@ -118,6 +118,17 @@ For a request to `/api/...`:
 
 ---
 
+## Retry and rerouting
+
+Two independent mechanisms can move a request to a different backend after the first choice:
+
+- **[Overflow `reroute`](config-reference.md#overflow)** reacts to **capacity** — when the selected backend's `max_connections` cap is full, another pool member is tried.
+- **[Retry](config-reference.md#retry)** reacts to **failure** — a connection error, an upstream status in `on_status`, or an unhealthy backend causes the request to be retried on another backend.
+
+Both stay within the request's **method-eligible** candidate set (a retry never lands on a backend that rejects the method), and retry additionally skips backends flagged unhealthy (`skip_unhealthy`, default on). Reselection continues through the location's selector, so by default the round-robin simply advances; see [Retry](config-reference.md#retry) for `retry_same_backend` and backoff.
+
+---
+
 ## IP access control
 
 Switchyard can restrict which clients are served by IP, via two optional fields — `whitelist` and `blacklist` (see [config-reference.md#whitelist--blacklist](config-reference.md#whitelist--blacklist)). Each is an array of entries; every entry is a single IP address or a CIDR range, IPv4 or IPv6 (e.g. `"203.0.113.7"`, `"192.0.2.0/24"`, `"2001:db8::/32"`).

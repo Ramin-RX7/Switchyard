@@ -20,6 +20,10 @@ const (
 	defaultServerIdleTimeout   = 60 * time.Second
 	defaultOverflowStatus      = http.StatusServiceUnavailable
 	defaultOverflowBody        = "switchyard: capacity reached"
+	defaultRetryBackoffBaseMs  = 50
+	defaultRetryBackoffMaxMs   = 2000
+	defaultRetryMaxBodyBytes   = 1 << 20 // 1 MiB
+	defaultRetryExhaustedBody  = "switchyard: retries exhausted"
 )
 
 // Duration is a timeout expressed in JSON as a plain integer number of seconds
@@ -77,6 +81,48 @@ type OverflowConfig struct {
 	Body         *string           `json:"body"`
 }
 
+// RetryConfig controls when a failed or bad-status forward is retried on another
+// backend. It exists at the top level and per-location; a location's fields merge
+// over the global ones (each set field wins, unset inherits — see resolveRetry).
+// All fields are pointers/nil-able so "unset" is distinguishable from a zero value.
+type RetryConfig struct {
+	// Attempts is the number of retries beyond the first try (0/absent disables retry).
+	Attempts *int `json:"attempts"`
+	// OnConnectionError retries when the backend is unreachable/resets (default true).
+	// Applies to any HTTP method.
+	OnConnectionError *bool `json:"on_connection_error"`
+	// OnStatus lists upstream status codes that trigger a retry. Only idempotent
+	// methods are retried on status unless RetryNonIdempotent is set. nil/absent = none.
+	OnStatus []int `json:"on_status"`
+	// RetryNonIdempotent allows status-based retry of non-idempotent methods
+	// (POST/PATCH). Default false.
+	RetryNonIdempotent *bool `json:"retry_non_idempotent"`
+	// RetrySameBackend, when true (default), lets normal selection reselect a
+	// just-tried backend; when false, already-tried backends are excluded.
+	RetrySameBackend *bool `json:"retry_same_backend"`
+	// SkipUnhealthy excludes backends flagged unhealthy (Backend.SetHealthy(false))
+	// from selection (default true). Falls back to the full set if all are unhealthy.
+	SkipUnhealthy *bool `json:"skip_unhealthy"`
+	// MaxBodyBytes caps request-body buffering for replay; a larger body makes the
+	// request single-attempt. Default 1 MiB.
+	MaxBodyBytes *int `json:"max_body_bytes"`
+	// Backoff is the inter-attempt delay policy.
+	Backoff *BackoffConfig `json:"backoff"`
+	// Response optionally replaces the client response when retries are exhausted.
+	// When nil, an exhausted status retry passes the real upstream response through
+	// and an exhausted connection retry renders backend_error (502).
+	Response *ResponseConfig `json:"response"`
+}
+
+// BackoffConfig is the inter-attempt delay policy for RetryConfig. Strategy is
+// "none", "constant", or "exponential" (default). BaseMs/MaxMs are milliseconds.
+type BackoffConfig struct {
+	Strategy *string `json:"strategy"`
+	BaseMs   *int    `json:"base_ms"`
+	MaxMs    *int    `json:"max_ms"`
+	Jitter   *bool   `json:"jitter"`
+}
+
 // ResponseConfig describes a Switchyard-generated HTTP response: a status code,
 // a set of headers, and a body. Header values and the body may contain
 // $variables (see vars.go), so responses can embed request data or the current
@@ -118,6 +164,9 @@ type Config struct {
 	Server *ServerConfig `json:"server"`
 	// Overflow controls behavior when a max_connections cap is hit.
 	Overflow *OverflowConfig `json:"overflow"`
+	// Retry controls when a failed or bad-status forward is retried on another
+	// backend. Project-wide default; overridable per location (field-merged).
+	Retry *RetryConfig `json:"retry"`
 	// BackendError / NotFound / MethodNotAllowed override Switchyard's built-in
 	// error responses (502 when an upstream is unreachable or a pool is empty;
 	// 404 when no location matched; 405 when a location matched but no backend
@@ -167,6 +216,9 @@ type LocationConfig struct {
 	// MaxConnections caps concurrent in-flight requests routed through this
 	// location (0 = unlimited). Independent of backend/project caps.
 	MaxConnections *int `json:"max_connections"`
+	// Retry overrides the global retry policy for this location. Fields set here
+	// win; unset fields inherit the global retry policy (see resolveRetry).
+	Retry *RetryConfig `json:"retry"`
 }
 
 // BackendConfig describes one configured upstream. URL is required; ID is
@@ -324,6 +376,9 @@ func (c Config) validate() error {
 	if err := checkOverflow(c.Overflow); err != nil {
 		return err
 	}
+	if err := checkRetry("retry", c.Retry); err != nil {
+		return err
+	}
 	if err := checkResponse("backend_error", c.BackendError); err != nil {
 		return err
 	}
@@ -355,6 +410,48 @@ func (c Config) validate() error {
 		if err := checkResponse("location "+lc.Path+" response", lc.Response); err != nil {
 			return err
 		}
+		if err := checkRetry("location "+lc.Path+" retry", lc.Retry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkRetry validates a retry config's enum, ranges, and non-negative counts.
+// Body/header templates in retry.response are compiled (and their $variables
+// validated) in resolveRetry via newResponder, so only numeric ranges are here.
+func checkRetry(name string, rc *RetryConfig) error {
+	if rc == nil {
+		return nil
+	}
+	if err := checkNonNegInt(name+".attempts", rc.Attempts); err != nil {
+		return err
+	}
+	if err := checkNonNegInt(name+".max_body_bytes", rc.MaxBodyBytes); err != nil {
+		return err
+	}
+	for _, s := range rc.OnStatus {
+		if s < 100 || s > 599 {
+			return fmt.Errorf("%s.on_status %d out of range (100-599)", name, s)
+		}
+	}
+	if b := rc.Backoff; b != nil {
+		if b.Strategy != nil {
+			switch *b.Strategy {
+			case "", "none", "constant", "exponential":
+			default:
+				return fmt.Errorf("%s.backoff.strategy %q is not supported (want \"none\", \"constant\", or \"exponential\")", name, *b.Strategy)
+			}
+		}
+		if err := checkNonNegInt(name+".backoff.base_ms", b.BaseMs); err != nil {
+			return err
+		}
+		if err := checkNonNegInt(name+".backoff.max_ms", b.MaxMs); err != nil {
+			return err
+		}
+	}
+	if err := checkResponse(name+".response", rc.Response); err != nil {
+		return err
 	}
 	return nil
 }

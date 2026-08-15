@@ -60,6 +60,7 @@ The `format` string uses `{field}` placeholders. Parameterized fields use `{grou
 | Placeholder | Description |
 |-------------|-------------|
 | `{backend_id}` | ID of the backend that handled the request (or `-` if none) |
+| `{retries}` | Number of [retries](config-reference.md#retry) performed before the final attempt (`0` if none) |
 
 ### Timing
 

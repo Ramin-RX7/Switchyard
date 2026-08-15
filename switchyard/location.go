@@ -57,7 +57,8 @@ type Location struct {
 	Headers         HeaderApplier
 	ResponseHeaders ResponseHeaderApplier
 
-	lim *limiter // concurrency cap for this location (nil = unlimited)
+	lim   *limiter    // concurrency cap for this location (nil = unlimited)
+	retry retryPolicy // resolved retry policy (global merged with this location's)
 }
 
 // Path returns the location's configured path (the prefix or regex source), for
@@ -76,7 +77,7 @@ func (l *Location) Matches(path string) bool {
 // compileLocations validates and compiles the configured locations against the
 // backend registry. It fails fast on any misconfiguration so problems surface
 // at startup rather than per request.
-func compileLocations(cfgs []LocationConfig, byID map[string]*Backend) ([]*Location, error) {
+func compileLocations(cfgs []LocationConfig, byID map[string]*Backend, globalRetry *RetryConfig) ([]*Location, error) {
 	locs := make([]*Location, 0, len(cfgs))
 	for _, c := range cfgs {
 		if c.Path == "" {
@@ -187,6 +188,14 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*Backend) ([]*Locat
 			}
 			loc.ResponseHeaders = rh
 		}
+
+		// Merge this location's retry fields over the global policy (location wins
+		// per field, unset inherits).
+		rp, err := resolveRetry(globalRetry, c.Retry)
+		if err != nil {
+			return nil, fmt.Errorf("location %q: %w", c.Path, err)
+		}
+		loc.retry = rp
 
 		locs = append(locs, loc)
 	}

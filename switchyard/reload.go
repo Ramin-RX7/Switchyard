@@ -60,6 +60,10 @@ type Server struct {
 
 func (s *Server) newGeneration(p *Proxy) *generation {
 	ctx, cancel := context.WithCancelCause(context.Background())
+	// Active health probers live as long as this generation: they stop when the
+	// generation is retired (force reload cancels immediately; a graceful reload
+	// cancels once the old generation drains).
+	p.StartHealthChecks(ctx)
 	return &generation{proxy: p, handler: p.Handler(), ctx: ctx, cancel: cancel}
 }
 

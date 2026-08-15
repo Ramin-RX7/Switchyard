@@ -35,6 +35,7 @@ Connection limits and timeouts are configurable at three scopes — project (top
 | `server` | [Server](#server) | — | no |
 | `overflow` | [Overflow](#overflow) | — | no |
 | `retry` | [Retry](#retry) | — | no |
+| `health` | [Health](#health) | — | no (per-backend default) |
 | `backend_error` | [Response](#response) | — | no |
 | `not_found` | [Response](#response) | — | no |
 | `method_not_allowed` | [Response](#response) | — | no |
@@ -81,6 +82,7 @@ Defined in the `backends` array.
 | `transport` | [Transport](#transport) | project value | no |
 | `disable_keep_alive` | bool | `false` | no |
 | `methods` | array of string | — (accepts all) | no |
+| `health` | [Health](#health) | — | no (field-merged over the top-level `health`) |
 
 The `timeouts`/`transport`/`disable_keep_alive` fields override the project defaults for this backend; see [Connection limits & timeouts](#connection-limits--timeouts).
 
@@ -348,6 +350,63 @@ The delay between attempts. `delay(n)` is the wait before retry number `n` (`n =
         "on_status": [502, 503, 504],
         "retry_same_backend": false,
         "backoff": { "strategy": "exponential", "base_ms": 50, "max_ms": 2000, "jitter": true }
+    }
+}
+```
+
+---
+
+## Health
+
+Automatic backend health detection. Declared at the **top level** (defaults) and/or per-[Backend](#backend);
+a backend's block **field-merges** over the top-level one (each set field wins, unset inherits). A backend
+flagged unhealthy is excluded from selection by retry's [`skip_unhealthy`](#retry) (default on). Two independent
+detectors, either or both:
+
+### Passive (`health.passive`)
+
+Ejects a backend from real traffic. Enabled when `count > 0` and `window > 0`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `statuses` | array of int | `[500, 502, 503, 504]` | Response statuses counted as failures. Connection errors always count (client/reload cancellations do not). |
+| `count` | int | `3` | Failures within `window` that trip the backend to unhealthy. |
+| `window` | int (seconds) | `60` | Sliding window over which failures are counted. |
+| `cooldown` | int (seconds) | `30` | How long the backend stays unhealthy before auto-recovering. **Used only when no active check is configured** (otherwise the prober owns recovery). |
+
+### Active (`health.active`)
+
+Probes a health endpoint on an interval. Enabled when `path` is non-empty.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | — (required to enable) | Health endpoint path, joined onto the backend URL. |
+| `method` | string | `"GET"` | HTTP method for the probe. |
+| `interval` | int (seconds) | `10` | Time between probe cycles. |
+| `timeout` | int (seconds) | `2` | Per-probe request timeout. |
+| `expected_status` | int | `200` | A cycle passes iff the probe returns this status. |
+| `retries` | int | `1` | Immediate retries within a cycle before the cycle counts as failed. |
+| `unhealthy_threshold` | int | `3` | Consecutive failed cycles before marking unhealthy. |
+| `healthy_threshold` | int | `2` | Consecutive passed cycles before marking healthy. |
+| `host` | string | — | Optional `Host` header on the probe request. |
+
+**Recovery.** With an active check configured, it is the sole authority on recovery — passive may eject
+immediately, but the flag is only restored by `healthy_threshold` consecutive good probe cycles (no cooldown
+timer runs). Without an active check, passive restores the backend after `cooldown` (half-open: traffic returns
+and re-tests). Every transition is logged (`switchyard: backend <url> marked (un)healthy (<reason>)`). Health
+state is in-memory and resets on reload (like the round-robin counter).
+
+Active probes run as goroutines started by the reloadable `Server` automatically. SDK users mounting a bare
+`Handler()` (no `Server`) call `Proxy.StartHealthChecks(ctx)` to enable active checks; passive checks need no
+start-up.
+
+```json
+{
+    "backends": [
+        { "id": "api1", "url": "http://127.0.0.1:9001", "health": { "active": { "path": "/healthz" } } }
+    ],
+    "health": {
+        "passive": { "statuses": [502, 503, 504], "count": 3, "window": 30, "cooldown": 20 }
     }
 }
 ```

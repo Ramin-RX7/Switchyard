@@ -182,7 +182,7 @@ func New(cfg Config) (*Proxy, error) {
 	// response (read live so an SDK override of p.BadGateway takes effect).
 	for _, b := range backends {
 		b := b
-		b.proxy.Transport = &proxyTransport{p: p, base: b.transport}
+		b.proxy.Transport = &proxyTransport{p: p, b: b, base: b.transport}
 		// ModifyResponse converts a retryable upstream status into an error so the
 		// response is discarded (nothing written to the client) and ErrorHandler
 		// runs — the idiomatic pre-body-write retry hook. A no-op when the request

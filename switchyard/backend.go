@@ -24,6 +24,8 @@ type Backend struct {
 	requestTimeout time.Duration       // per-request upstream deadline (0 = none)
 	methods        map[string]struct{} // accepted HTTP methods, upper-cased (nil/empty = all)
 	healthy        atomic.Bool         // liveness flag; retry's skip_unhealthy excludes false
+	health         healthPolicy        // resolved passive+active health-check config
+	hs             healthState         // passive window + recovery bookkeeping
 }
 
 // Healthy reports whether this backend is currently considered healthy. New
@@ -104,6 +106,10 @@ func buildBackends(cfg Config) ([]*Backend, error) {
 			lim:            newLimiter(s.maxConns),
 			requestTimeout: s.requestTimeout,
 			methods:        methods,
+			health:         resolveHealth(cfg.Health, bc.Health),
+		}
+		if b.health.passive.enabled {
+			b.hs.fails = make([]time.Time, b.health.passive.count)
 		}
 		b.healthy.Store(true) // backends start healthy
 		// The ErrorHandler for backend failures (unreachable host, reset

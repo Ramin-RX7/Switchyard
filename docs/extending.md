@@ -316,6 +316,17 @@ See [architecture.md](architecture.md#configuration-reload-hot-reload) for the g
 
 ---
 
+## Backend health checks
+
+Health checks ([config-reference.md#health](config-reference.md#health)) mark a backend unhealthy so retry's `skip_unhealthy` excludes it from selection. Two SDK touch-points:
+
+- **The flag** — `Backend.SetHealthy(bool)` / `Backend.Healthy()` read and drive the health flag directly. A custom checker (querying a service registry, an orchestrator API, your own metrics) can call `SetHealthy` from any goroutine; it is safe for concurrent use and logs nothing (the built-in detectors log their own transitions). Reach a backend via `p.Pool.Backends()` or a location's `loc.Pool.Backends()`.
+- **Active probers** — `Proxy.StartHealthChecks(ctx)` launches the config-driven active probe goroutines; each stops when `ctx` is cancelled. The `Server` type calls this automatically for every generation (bound to the generation's lifetime), so the turnkey binary and any `Server`-based SDK setup get active checks for free. If you mount a bare `Proxy.Handler()` without `Server`, call `StartHealthChecks(ctx)` yourself to enable active checks — pass a context you cancel on shutdown. Passive checks need no start-up (they observe traffic inline).
+
+Health state is per-`*Backend` and in-memory, so it resets when a reload rebuilds the backends (as the round-robin counter does).
+
+---
+
 ## Concurrency & tuning
 
 Go's `net/http` serves every request in its own goroutine, so Switchyard is concurrent by default. A few knobs and rules matter under load:

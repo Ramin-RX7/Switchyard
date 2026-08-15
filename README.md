@@ -20,6 +20,7 @@ Switchyard sits in front of your backend services and routes incoming traffic to
 - **Request variables** — nginx-style `$variable` placeholders (`$remote_addr`, `$scheme`, `$host`, `$http_*`, `$time_iso8601`, and more)
 - **Connection limits & overflow** — concurrent-in-flight caps nested at project / location / backend scopes, with configurable overflow behavior (`reject` / `queue` / `reroute`)
 - **Retry / reroute on failure** — retry a failed forward on another backend on a connection error, a configurable response-status list, or an unhealthy backend, with idempotency-aware safety, `none`/`constant`/`exponential` backoff (+ jitter), and field-merged global/per-location policy
+- **Health checks** — per-backend passive (eject after N failing statuses/connection errors in a time window) and active (probe a health endpoint on an interval) detection, with cooldown or probe-driven recovery, logged transitions, and field-merged global/per-backend config
 - **Timeouts & transport tuning** — upstream and client-facing timeouts plus keep-alive pool tuning, at project and per-backend scope
 - **Custom logging** — structured log lines with a user-defined format, parameterized fields, optional body capture, and multiple outputs (console / file / both); stacked global and per-location loggers
 - **Fail-fast validation** — all configuration errors (unknown variables, bad regexes, missing backends, bad IP ranges) are caught at startup

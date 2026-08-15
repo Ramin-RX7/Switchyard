@@ -24,7 +24,23 @@ const (
 	defaultRetryBackoffMaxMs   = 2000
 	defaultRetryMaxBodyBytes   = 1 << 20 // 1 MiB
 	defaultRetryExhaustedBody  = "switchyard: retries exhausted"
+
+	// Health-check defaults.
+	defaultHealthPassiveCount    = 3
+	defaultHealthPassiveWindow   = 60 * time.Second
+	defaultHealthPassiveCooldown = 30 * time.Second
+	defaultHealthActiveMethod    = http.MethodGet
+	defaultHealthActiveInterval  = 10 * time.Second
+	defaultHealthActiveTimeout   = 2 * time.Second
+	defaultHealthActiveStatus    = http.StatusOK
+	defaultHealthActiveRetries   = 1
+	defaultHealthUnhealthyThresh = 3
+	defaultHealthHealthyThresh   = 2
 )
+
+// defaultHealthPassiveStatuses is the failure-status set used when a passive
+// health block is enabled but omits `statuses`.
+var defaultHealthPassiveStatuses = []int{500, 502, 503, 504}
 
 // Duration is a timeout expressed in JSON as a plain integer number of seconds
 // (e.g. 30). null/0 means 0 ("no limit"). Internally it is a time.Duration, so
@@ -123,6 +139,43 @@ type BackoffConfig struct {
 	Jitter   *bool   `json:"jitter"`
 }
 
+// HealthConfig controls automatic backend health detection. It exists at the top
+// level (defaults) and per-backend; a backend's block field-merges over the
+// top-level one (each set field wins, unset inherits — see resolveHealth). A
+// backend flagged unhealthy is excluded from selection by retry's skip_unhealthy.
+type HealthConfig struct {
+	Passive *PassiveConfig `json:"passive"`
+	Active  *ActiveConfig  `json:"active"`
+}
+
+// PassiveConfig marks a backend unhealthy from real traffic: when at least Count
+// failures (a response whose status is in Statuses, or a connection error) occur
+// within Window, the backend is ejected. Enabled when Count > 0 and Window > 0.
+type PassiveConfig struct {
+	Statuses []int     `json:"statuses"` // nil ⇒ default 5xx set; connection errors always count
+	Count    *int      `json:"count"`
+	Window   *Duration `json:"window"`
+	// Cooldown is how long the backend stays unhealthy before auto-recovering.
+	// Used ONLY when no active check is configured (otherwise the prober recovers).
+	Cooldown *Duration `json:"cooldown"`
+}
+
+// ActiveConfig probes a health endpoint on an interval. A cycle passes iff the
+// probe returns ExpectedStatus (after Retries immediate retries); UnhealthyThresh
+// consecutive failed cycles eject the backend and HealthyThresh consecutive passed
+// cycles restore it. Enabled when Path is non-empty.
+type ActiveConfig struct {
+	Path               string    `json:"path"`
+	Method             string    `json:"method"`
+	Interval           *Duration `json:"interval"`
+	Timeout            *Duration `json:"timeout"`
+	ExpectedStatus     *int      `json:"expected_status"`
+	Retries            *int      `json:"retries"`
+	UnhealthyThreshold *int      `json:"unhealthy_threshold"`
+	HealthyThreshold   *int      `json:"healthy_threshold"`
+	Host               string    `json:"host"`
+}
+
 // ResponseConfig describes a Switchyard-generated HTTP response: a status code,
 // a set of headers, and a body. Header values and the body may contain
 // $variables (see vars.go), so responses can embed request data or the current
@@ -167,6 +220,9 @@ type Config struct {
 	// Retry controls when a failed or bad-status forward is retried on another
 	// backend. Project-wide default; overridable per location (field-merged).
 	Retry *RetryConfig `json:"retry"`
+	// Health is the project-wide default backend health-check config; each backend
+	// field-merges its own `health` over it (see resolveHealth).
+	Health *HealthConfig `json:"health"`
 	// BackendError / NotFound / MethodNotAllowed override Switchyard's built-in
 	// error responses (502 when an upstream is unreachable or a pool is empty;
 	// 404 when no location matched; 405 when a location matched but no backend
@@ -238,6 +294,8 @@ type BackendConfig struct {
 	Timeouts         *TimeoutsConfig  `json:"timeouts"`
 	Transport        *TransportConfig `json:"transport"`
 	DisableKeepAlive *bool            `json:"disable_keep_alive"`
+	// Health overrides the top-level health config for this backend (field-merged).
+	Health *HealthConfig `json:"health"`
 }
 
 // LoadConfig reads and parses the configuration file at path. It is exported so
@@ -379,6 +437,9 @@ func (c Config) validate() error {
 	if err := checkRetry("retry", c.Retry); err != nil {
 		return err
 	}
+	if err := checkHealth("health", c.Health); err != nil {
+		return err
+	}
 	if err := checkResponse("backend_error", c.BackendError); err != nil {
 		return err
 	}
@@ -402,6 +463,9 @@ func (c Config) validate() error {
 		if err := checkTransport(who+" transport", bc.Transport); err != nil {
 			return err
 		}
+		if err := checkHealth(who+" health", bc.Health); err != nil {
+			return err
+		}
 	}
 	for _, lc := range c.Locations {
 		if err := checkNonNegInt("location "+lc.Path+" max_connections", lc.MaxConnections); err != nil {
@@ -411,6 +475,55 @@ func (c Config) validate() error {
 			return err
 		}
 		if err := checkRetry("location "+lc.Path+" retry", lc.Retry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkHealth validates a health config's status ranges, non-negative
+// durations/counts, and that an active block declares a path. Fails fast at
+// startup.
+func checkHealth(name string, hc *HealthConfig) error {
+	if hc == nil {
+		return nil
+	}
+	if p := hc.Passive; p != nil {
+		for _, s := range p.Statuses {
+			if s < 100 || s > 599 {
+				return fmt.Errorf("%s.passive.statuses %d out of range (100-599)", name, s)
+			}
+		}
+		if err := checkNonNegInt(name+".passive.count", p.Count); err != nil {
+			return err
+		}
+		if err := checkNonNegDur(name+".passive.window", p.Window); err != nil {
+			return err
+		}
+		if err := checkNonNegDur(name+".passive.cooldown", p.Cooldown); err != nil {
+			return err
+		}
+	}
+	if a := hc.Active; a != nil {
+		if a.Path == "" {
+			return fmt.Errorf("%s.active requires a non-empty path", name)
+		}
+		if a.ExpectedStatus != nil && (*a.ExpectedStatus < 100 || *a.ExpectedStatus > 599) {
+			return fmt.Errorf("%s.active.expected_status %d out of range (100-599)", name, *a.ExpectedStatus)
+		}
+		if err := checkNonNegDur(name+".active.interval", a.Interval); err != nil {
+			return err
+		}
+		if err := checkNonNegDur(name+".active.timeout", a.Timeout); err != nil {
+			return err
+		}
+		if err := checkNonNegInt(name+".active.retries", a.Retries); err != nil {
+			return err
+		}
+		if err := checkNonNegInt(name+".active.unhealthy_threshold", a.UnhealthyThreshold); err != nil {
+			return err
+		}
+		if err := checkNonNegInt(name+".active.healthy_threshold", a.HealthyThreshold); err != nil {
 			return err
 		}
 	}

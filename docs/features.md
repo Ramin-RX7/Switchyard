@@ -116,6 +116,13 @@ Retries a failed forward on another backend. Three triggers: a **connection erro
 - **⚙️ Config:** `retry` (top-level + per-location): `attempts`, `on_connection_error`, `on_status`, `retry_non_idempotent`, `retry_same_backend`, `skip_unhealthy`, `max_body_bytes`, `backoff` (`strategy`, `base_ms`, `max_ms`, `jitter`), `response`.
 - **🧩 SDK:** built into `DefaultActor` (default behavior; override `p.Actor` to replace). Backend health hook `Backend.SetHealthy(bool)` / `Backend.Healthy()`; a `retries` log field records retries performed. No new pluggable stage.
 
+## 16. Backend health checks (passive + active)
+
+Two per-backend detectors flip the health flag that retry's `skip_unhealthy` acts on. **Passive** ejects a backend when it returns ≥ `count` failures (a status in the configured list, or a connection error) within a sliding `window`. **Active** probes a health endpoint on an `interval`; a cycle passes iff it returns `expected_status` (after `retries` immediate retries), and `unhealthy_threshold` / `healthy_threshold` consecutive cycles flip the flag. **Recovery:** when an active check is configured it is the sole authority on recovery; otherwise passive restores the backend after a `cooldown` (half-open). Every transition is logged. Health state is in-memory and resets on reload (like the round-robin counter). Global defaults + per-backend, **field-merged**.
+
+- **⚙️ Config:** `health` (top-level default + per-backend): `passive` (`statuses`, `count`, `window`, `cooldown`) and `active` (`path`, `method`, `interval`, `timeout`, `expected_status`, `retries`, `unhealthy_threshold`, `healthy_threshold`, `host`).
+- **🧩 SDK:** `Backend.SetHealthy(bool)` / `Backend.Healthy()` drive/read the flag from custom logic; `Proxy.StartHealthChecks(ctx)` launches active probers (auto-called by `Server` per generation; raw `Handler()` users call it themselves). No new pluggable stage — health feeds the existing selection skip.
+
 ---
 
 ## The 11 pluggable stages at a glance

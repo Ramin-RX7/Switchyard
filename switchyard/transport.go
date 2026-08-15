@@ -33,6 +33,7 @@ func buildTransport(s backendSettings) *http.Transport {
 // and writes to the per-request LogRecord owned by the calling goroutine.
 type proxyTransport struct {
 	p    *Proxy
+	b    *Backend // the backend this transport reaches (for passive health observation)
 	base http.RoundTripper
 }
 
@@ -54,6 +55,15 @@ func (t *proxyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		if resp != nil {
 			rec.AppStatus = resp.StatusCode
 		}
+	}
+	// Feed the passive health detector: every real backend round-trip's outcome
+	// is observed here (independent of retry).
+	if t.b != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.b.observeOutcome(status, err)
 	}
 	return resp, err
 }

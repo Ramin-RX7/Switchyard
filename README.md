@@ -1,5 +1,11 @@
 # Switchyard
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/Ramin-RX7/Switchyard/switchyard.svg)](https://pkg.go.dev/github.com/Ramin-RX7/Switchyard/switchyard)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Ramin-RX7/Switchyard)](https://goreportcard.com/report/github.com/Ramin-RX7/Switchyard)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Ramin-RX7/Switchyard)](go.mod)
+[![Release](https://img.shields.io/github/v/tag/Ramin-RX7/Switchyard?label=release)](https://github.com/Ramin-RX7/Switchyard/tags)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An HTTP reverse proxy and API gateway written in Go.
 
 Switchyard sits in front of your backend services and routes incoming traffic to them — forwarding requests, load-balancing across pools, routing by path and HTTP method, gating clients by IP, serving static files, generating its own responses, injecting request and response headers, applying connection limits and timeouts, and writing structured access logs. Configuration is a single JSON file, reloadable in-process without dropping connections. For a complete, always-current inventory see [docs/features.md](docs/features.md).
@@ -143,3 +149,9 @@ Full reference documentation is in the [`docs/`](docs/) directory:
 | [docs/logging.md](docs/logging.md) | Log format, fields, outputs, body capture |
 | [docs/extending.md](docs/extending.md) | Using Switchyard as an SDK — override any of the 13 pluggable stages in your own Go code |
 | [docs/testing.md](docs/testing.md) | Test-suite layout, per-stage testing patterns, and the tests-required rule |
+
+---
+
+## License
+
+Switchyard is released under the [MIT License](LICENSE).

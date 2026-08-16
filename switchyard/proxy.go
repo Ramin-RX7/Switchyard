@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -72,9 +73,17 @@ type Proxy struct {
 	// set from the config's top-level max_connections. 0 (default) = unlimited.
 	MaxInFlight int
 
+	// RateLimiter is the throughput-limit algorithm (default TokenBucketLimiter)
+	// and RateLimitStore is where its per-key state lives (default in-memory). Both
+	// are read live, so an SDK user can swap either — a different algorithm, or a
+	// Redis/other-backed store behind the same interface — before serving.
+	RateLimiter    RateLimiter
+	RateLimitStore RateLimitStore
+
 	// resolved config-derived settings (set in New).
 	overflow       overflowPolicy
 	retry          retryPolicy
+	rateLimit      *rateLimitRule // global-tier rule (nil = no global limit)
 	srvReadHeader  time.Duration
 	srvReadTimeout time.Duration
 	srvWriteout    time.Duration
@@ -139,6 +148,10 @@ func New(cfg Config) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	rateLimit, err := newRateLimitRule("global", cfg.RateLimit)
+	if err != nil {
+		return nil, err
+	}
 	badGateway, err := responderOf(cfg.BackendError, http.StatusBadGateway, "switchyard: backend unavailable")
 	if err != nil {
 		return nil, err
@@ -169,8 +182,11 @@ func New(cfg Config) (*Proxy, error) {
 		MethodNotAllowed: methodNotAllowed,
 		Forbidden:        forbidden,
 		MaxInFlight:      ptrInt(cfg.MaxConnections, 0),
+		RateLimiter:      TokenBucketLimiter{},
+		RateLimitStore:   NewMemoryRateLimitStore(),
 		overflow:         overflow,
 		retry:            retry,
+		rateLimit:        rateLimit,
 		srvReadHeader:    rh,
 		srvReadTimeout:   rt,
 		srvWriteout:      wt,
@@ -351,8 +367,75 @@ func (p *Proxy) ListenAndServe(addr string) error {
 // decide what to do with it, then handle it.
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	req := captureRequest(r)
+
+	// Rate-limit gates (stateful, so outside the pure Decider). The global tier
+	// runs before routing so it also guards no-match traffic; the location tier
+	// runs after. Both must pass (AND). `always`-mode allowances are collected so
+	// the RateLimit-* headers can be set on the eventual response.
+	var expose *Allowance // tightest "always"-mode allowance to surface on the response
+	if p.rateLimit != nil {
+		if a, ok := p.rateLimit.allow(r.Context(), p.RateLimiter, p.RateLimitStore, req); !ok {
+			p.rejectRateLimited(w, r, req, p.rateLimit, a)
+			return
+		} else {
+			expose = tightest(expose, p.rateLimit, a)
+		}
+	}
+
 	d := p.Decider.Decide(req)
+
+	if d.Location != nil && d.Location.rateLimit != nil {
+		if a, ok := d.Location.rateLimit.allow(r.Context(), p.RateLimiter, p.RateLimitStore, req); !ok {
+			p.rejectRateLimited(w, r, req, d.Location.rateLimit, a)
+			return
+		} else {
+			expose = tightest(expose, d.Location.rateLimit, a)
+		}
+	}
+
+	if expose != nil {
+		setRateLimitHeaders(w.Header(), *expose)
+	}
 	p.handleRequest(w, r, req, d)
+}
+
+// tightest returns the allowance to surface as RateLimit-* headers: the one with
+// the fewest remaining tokens among rules in "always" mode (nil when none).
+func tightest(cur *Allowance, rule *rateLimitRule, a Allowance) *Allowance {
+	if rule.headers != "always" || a.Limit == 0 {
+		return cur // rule opted out, or did not apply to this method
+	}
+	if cur == nil || a.Remaining < cur.Remaining {
+		return &a
+	}
+	return cur
+}
+
+// rejectRateLimited renders a rule's 429 response, always with Retry-After and,
+// unless the rule's header mode is "off", the RateLimit-* headers.
+func (p *Proxy) rejectRateLimited(w http.ResponseWriter, r *http.Request, req Request, rule *rateLimitRule, a Allowance) {
+	h := w.Header()
+	if rule.headers != "off" {
+		setRateLimitHeaders(h, a)
+	}
+	h.Set("Retry-After", strconv.Itoa(ceilSeconds(a.RetryAfter)))
+	rule.resp.Generate(w, r, req)
+}
+
+// setRateLimitHeaders writes the draft RateLimit-* headers from an allowance.
+func setRateLimitHeaders(h http.Header, a Allowance) {
+	h.Set("RateLimit-Limit", strconv.Itoa(a.Limit))
+	h.Set("RateLimit-Remaining", strconv.Itoa(a.Remaining))
+	h.Set("RateLimit-Reset", strconv.Itoa(ceilSeconds(a.Reset)))
+}
+
+// ceilSeconds rounds a duration up to whole seconds (>= 1 for any positive
+// duration), matching the integer-seconds form of Retry-After / RateLimit-Reset.
+func ceilSeconds(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	return int((d + time.Second - 1) / time.Second)
 }
 
 // handleRequest acts on the decision. It is the only stage with side effects.

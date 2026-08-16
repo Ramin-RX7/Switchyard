@@ -5,7 +5,7 @@ A complete inventory of what Switchyard implements today. Each feature is marked
 - **⚙️ Config** — configurable from `switchyard.json` (no code).
 - **🧩 SDK** — a Go interface you can swap to replace the default logic entirely.
 
-Architecturally, every request flows through a three-stage pipeline — **Capture** (an immutable `Request` snapshot) → **Decide** (pure routing, no I/O) → **Act** (the only side-effecting stage). All behavior sits behind **11 pluggable stages** (an interface plus a config-driven default), so the config-only binary and the SDK run off identical code. `New(cfg)` reproduces the turnkey binary's behavior exactly; SDK overrides are additive.
+Architecturally, every request flows through a three-stage pipeline — **Capture** (an immutable `Request` snapshot) → **Decide** (pure routing, no I/O) → **Act** (the only side-effecting stage). All behavior sits behind **13 pluggable stages** (an interface plus a config-driven default), so the config-only binary and the SDK run off identical code. `New(cfg)` reproduces the turnkey binary's behavior exactly; SDK overrides are additive.
 
 See [config-reference.md](config-reference.md) for every JSON field and [extending.md](extending.md) for the SDK.
 
@@ -123,9 +123,16 @@ Two per-backend detectors flip the health flag that retry's `skip_unhealthy` act
 - **⚙️ Config:** `health` (top-level default + per-backend): `passive` (`statuses`, `count`, `window`, `cooldown`) and `active` (`path`, `method`, `interval`, `timeout`, `expected_status`, `retries`, `unhealthy_threshold`, `healthy_threshold`, `host`).
 - **🧩 SDK:** `Backend.SetHealthy(bool)` / `Backend.Healthy()` drive/read the flag from custom logic; `Proxy.StartHealthChecks(ctx)` launches active probers (auto-called by `Server` per generation; raw `Handler()` users call it themselves). No new pluggable stage — health feeds the existing selection skip.
 
+## 17. Rate limiting (throughput)
+
+Throttles requests by a **composite key** (any of client IP, a header, method, path) using a token bucket (`rate` per `period`, `burst` capacity). A distinct axis from the concurrency cap (`max_connections`) — requests-per-time, not in-flight count. Two tiers, **global** (checked before routing, so it guards 404s too) and **per-location**, both enforced (AND). Over-limit → **429** with `Retry-After`; the draft `RateLimit-Limit/Remaining/Reset` headers are emitted per a configurable mode (`off` / `on-reject` / `always`). Both the **algorithm** and the **storage** are independently SDK-swappable behind uniform interfaces; the default store is in-memory (no external dependency) and resets on reload.
+
+- **⚙️ Config:** `rate_limit` (top-level global tier + per-location): `key` (`ip` / `header:<NAME>` / `method` / `path`), `rate`, `period`, `burst`, `methods`, `headers`, and the reject response (`status`, `response_headers`, `body`).
+- **🧩 SDK:** `RateLimiter` (algorithm, default `TokenBucketLimiter`) via `p.RateLimiter`; `RateLimitStore` (storage, default in-memory `NewMemoryRateLimitStore`) via `p.RateLimitStore` — the same interface backs Redis/memcached/etc.
+
 ---
 
-## The 11 pluggable stages at a glance
+## The 13 pluggable stages at a glance
 
 | Stage | Interface | Default | Config | Set via |
 |-------|-----------|---------|--------|---------|
@@ -140,5 +147,7 @@ Two per-backend detectors flip the health flag that retry's `skip_unhealthy` act
 | Access control | `AccessController` | `IPAccessControl` | `whitelist` / `blacklist` | `p.Access`, `loc.Access` |
 | Response generation | `ResponseGenerator` | `TemplateResponder` | `response`, error responses | `loc.Responder`, `p.NotFound` / `BadGateway` / `MethodNotAllowed` / `Forbidden` |
 | Logging | `Logger` | `FormatLogger` | `logging` | `p.Logger`, `loc.Logger` |
+| Rate-limit algorithm | `RateLimiter` | `TokenBucketLimiter` | `rate_limit` | `p.RateLimiter` |
+| Rate-limit storage | `RateLimitStore` | in-memory | `rate_limit` | `p.RateLimitStore` |
 
 **Two ways to run, one codebase:** the config-only turnkey binary (`./Switchyard -config switchyard.json`) and the SDK (import the package, override any stage, compile your own binary). See [architecture.md](architecture.md) and [extending.md](extending.md).

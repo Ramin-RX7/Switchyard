@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -41,6 +42,17 @@ const (
 // defaultHealthPassiveStatuses is the failure-status set used when a passive
 // health block is enabled but omits `statuses`.
 var defaultHealthPassiveStatuses = []int{500, 502, 503, 504}
+
+// Rate-limit defaults.
+const (
+	defaultRateLimitPeriod  = 1 // seconds
+	defaultRateLimitStatus  = http.StatusTooManyRequests
+	defaultRateLimitBody    = "switchyard: rate limit exceeded"
+	defaultRateLimitHeaders = "on-reject"
+)
+
+// defaultRateLimitKey is the key used when `rate_limit` omits `key`.
+var defaultRateLimitKey = []string{"ip"}
 
 // Duration is a timeout expressed in JSON as a plain integer number of seconds
 // (e.g. 30). null/0 means 0 ("no limit"). Internally it is a time.Duration, so
@@ -176,6 +188,29 @@ type ActiveConfig struct {
 	Host               string    `json:"host"`
 }
 
+// RateLimitConfig throttles requests by a composite key using a token bucket. It
+// exists at the top level (global tier) and per-location; both tiers are enforced
+// (a request must pass each). Enabled when Rate > 0.
+type RateLimitConfig struct {
+	// Key lists the dimensions joined into the bucket key. Each entry is "ip",
+	// "method", "path", or "header:<NAME>". Empty ⇒ ["ip"].
+	Key []string `json:"key"`
+	// Rate is the number of requests allowed per Period; Burst is the bucket
+	// capacity (max instantaneous burst, default = Rate).
+	Rate   *int `json:"rate"`
+	Period *int `json:"period"` // seconds; default 1
+	Burst  *int `json:"burst"`
+	// Methods optionally restricts the rule to these HTTP methods (empty = all).
+	Methods []string `json:"methods"`
+	// Headers controls RateLimit-* emission: "off", "on-reject" (default), or "always".
+	Headers string `json:"headers"`
+	// Status/ResponseHeaders/Body configure the 429 reject response (a
+	// ResponseGenerator; body/headers may contain $variables).
+	Status          *int              `json:"status"`
+	ResponseHeaders map[string]string `json:"response_headers"`
+	Body            *string           `json:"body"`
+}
+
 // ResponseConfig describes a Switchyard-generated HTTP response: a status code,
 // a set of headers, and a body. Header values and the body may contain
 // $variables (see vars.go), so responses can embed request data or the current
@@ -223,6 +258,9 @@ type Config struct {
 	// Health is the project-wide default backend health-check config; each backend
 	// field-merges its own `health` over it (see resolveHealth).
 	Health *HealthConfig `json:"health"`
+	// RateLimit is the project-wide (global tier) throughput limit; a matched
+	// location may add its own tier (both are enforced).
+	RateLimit *RateLimitConfig `json:"rate_limit"`
 	// BackendError / NotFound / MethodNotAllowed override Switchyard's built-in
 	// error responses (502 when an upstream is unreachable or a pool is empty;
 	// 404 when no location matched; 405 when a location matched but no backend
@@ -275,6 +313,9 @@ type LocationConfig struct {
 	// Retry overrides the global retry policy for this location. Fields set here
 	// win; unset fields inherit the global retry policy (see resolveRetry).
 	Retry *RetryConfig `json:"retry"`
+	// RateLimit is this location's throughput-limit tier (independent of the
+	// global tier; both are enforced).
+	RateLimit *RateLimitConfig `json:"rate_limit"`
 }
 
 // BackendConfig describes one configured upstream. URL is required; ID is
@@ -440,6 +481,9 @@ func (c Config) validate() error {
 	if err := checkHealth("health", c.Health); err != nil {
 		return err
 	}
+	if err := checkRateLimit("rate_limit", c.RateLimit); err != nil {
+		return err
+	}
 	if err := checkResponse("backend_error", c.BackendError); err != nil {
 		return err
 	}
@@ -477,6 +521,49 @@ func (c Config) validate() error {
 		if err := checkRetry("location "+lc.Path+" retry", lc.Retry); err != nil {
 			return err
 		}
+		if err := checkRateLimit("location "+lc.Path+" rate_limit", lc.RateLimit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkRateLimit validates a rate-limit config's key dimensions, non-negative
+// numeric fields, headers enum, and reject-status range. Fails fast at startup.
+func checkRateLimit(name string, rc *RateLimitConfig) error {
+	if rc == nil {
+		return nil
+	}
+	for _, d := range rc.Key {
+		if d == "ip" || d == "method" || d == "path" {
+			continue
+		}
+		if h, ok := strings.CutPrefix(d, "header:"); ok && strings.TrimSpace(h) != "" {
+			continue
+		}
+		return fmt.Errorf("%s.key %q is not a valid dimension (want \"ip\", \"method\", \"path\", or \"header:<NAME>\")", name, d)
+	}
+	if err := checkNonNegInt(name+".rate", rc.Rate); err != nil {
+		return err
+	}
+	if err := checkNonNegInt(name+".period", rc.Period); err != nil {
+		return err
+	}
+	if err := checkNonNegInt(name+".burst", rc.Burst); err != nil {
+		return err
+	}
+	switch rc.Headers {
+	case "", "off", "on-reject", "always":
+	default:
+		return fmt.Errorf("%s.headers %q is not supported (want \"off\", \"on-reject\", or \"always\")", name, rc.Headers)
+	}
+	for _, m := range rc.Methods {
+		if strings.TrimSpace(m) == "" {
+			return fmt.Errorf("%s.methods: entries must not be empty", name)
+		}
+	}
+	if rc.Status != nil && (*rc.Status < 100 || *rc.Status > 599) {
+		return fmt.Errorf("%s.status %d out of range (100-599)", name, *rc.Status)
 	}
 	return nil
 }

@@ -36,6 +36,7 @@ Connection limits and timeouts are configurable at three scopes — project (top
 | `overflow` | [Overflow](#overflow) | — | no |
 | `retry` | [Retry](#retry) | — | no |
 | `health` | [Health](#health) | — | no (per-backend default) |
+| `rate_limit` | [Rate limiting](#rate-limiting) | — | no |
 | `backend_error` | [Response](#response) | — | no |
 | `not_found` | [Response](#response) | — | no |
 | `method_not_allowed` | [Response](#response) | — | no |
@@ -129,6 +130,7 @@ Defined in the `locations` array.
 | `logging` | [Logging](#logging) | — | no |
 | `max_connections` | int | `0` (unlimited) | no |
 | `retry` | [Retry](#retry) | — | no (field-merged over the global `retry`) |
+| `rate_limit` | [Rate limiting](#rate-limiting) | — | no (this location's tier) |
 | `whitelist` | array of string | — | no |
 | `blacklist` | array of string | — | no |
 
@@ -350,6 +352,49 @@ The delay between attempts. `delay(n)` is the wait before retry number `n` (`n =
         "on_status": [502, 503, 504],
         "retry_same_backend": false,
         "backoff": { "strategy": "exponential", "base_ms": 50, "max_ms": 2000, "jitter": true }
+    }
+}
+```
+
+---
+
+## Rate limiting
+
+Throttles requests by a composite key using a token bucket. Declared at the **top level** (global tier, checked
+before routing so it also guards no-match/404 traffic) and/or per-[Location](#location) (that location's tier);
+both tiers are enforced (a request must pass each). Distinct from [`max_connections`](#connection-limits--timeouts)
+— that caps concurrent in-flight requests, this caps requests per unit time. Enabled when `rate > 0`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `key` | array of string | `["ip"]` | Composite bucket key. Each entry is `"ip"`, `"method"`, `"path"`, or `"header:<NAME>"`; the resolved values are joined. Changing any dimension is a separate bucket. |
+| `rate` | int | — (required) | Requests allowed per `period`. `0`/absent disables the tier. |
+| `period` | int (seconds) | `1` | Window the `rate` refills over ⇒ `rate/period` tokens/sec. |
+| `burst` | int | `= rate` | Bucket capacity — the maximum instantaneous burst. |
+| `methods` | array of string | — (all) | Restrict the rule to these HTTP methods (case-insensitive). Empty = every method. |
+| `headers` | string | `"on-reject"` | RateLimit-* header emission: `"off"`, `"on-reject"` (only on 429), or `"always"` (on allowed responses too). |
+| `status` | int | `429` | Status for the reject response. |
+| `response_headers` | object (string → string) | — | Extra headers on the reject response. Values may contain [variables](variables.md). |
+| `body` | string | `switchyard: rate limit exceeded` | Reject response body. May contain [variables](variables.md). |
+
+On rejection the response is a [Response](#response)-style body with the configured `status`, always a
+`Retry-After` header, and (unless `headers: "off"`) `RateLimit-Limit`/`RateLimit-Remaining`/`RateLimit-Reset`.
+State is in-memory by default (no external dependency) and resets on reload, like the round-robin counter.
+
+Both the **algorithm** and the **storage** are SDK-swappable behind uniform interfaces (`RateLimiter` /
+`RateLimitStore`) — see [extending.md](extending.md#rate-limiting-algorithm--storage). A distributed store (Redis
+etc.) implements the same interface; without one, each process counts independently (the effective limit is
+N× the configured value across N instances).
+
+```json
+{
+    "rate_limit": {
+        "key": ["header:X-Api-Key", "path"],
+        "rate": 100,
+        "period": 60,
+        "burst": 20,
+        "methods": ["POST", "PUT", "DELETE"],
+        "headers": "always"
     }
 }
 ```

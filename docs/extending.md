@@ -327,6 +327,36 @@ Health state is per-`*Backend` and in-memory, so it resets when a reload rebuild
 
 ---
 
+## Rate limiting: algorithm & storage
+
+Rate limiting ([config-reference.md#rate-limiting](config-reference.md#rate-limiting)) exposes **two** independent SDK seams, both read live from the `Proxy`:
+
+- **`p.RateLimiter`** — the algorithm. The default is `TokenBucketLimiter`. The interface is stateless across keys (all state lives in the store), so one instance serves every rule:
+
+  ```go
+  type RateLimiter interface {
+      Allow(ctx context.Context, store RateLimitStore, key string, rate float64, burst int) (Allowance, error)
+  }
+  ```
+  Replace it to change the whole limiting strategy (sliding window, GCRA, leaky bucket, a call to an external limiter service, …). Rule parameters (`rate`, `burst`, the composite key) are passed in per request; your algorithm keeps its per-key state in whatever `store` it is handed.
+
+- **`p.RateLimitStore`** — the storage, behind one **uniform interface** regardless of backend:
+
+  ```go
+  type RateLimitStore interface {
+      Get(ctx, key) (state []byte, exists bool, now time.Time, err error)
+      SetIfAbsent(ctx, key string, state []byte, ttl time.Duration) (ok bool, err error)
+      CompareAndSwap(ctx, key string, oldState, newState []byte, ttl time.Duration) (ok bool, err error)
+  }
+  ```
+  The default is in-memory (`NewMemoryRateLimitStore`, no external dependency). A Redis/memcached store implements the same three primitives — `Get` (with the store's clock), `SetIfAbsent` (SET NX PX), and `CompareAndSwap` (a WATCH/MULTI or Lua CAS) — and drops straight in. The value is an opaque `[]byte`, so the algorithm owns its state shape and the store need not know the algorithm.
+
+The two compose freely: keep the default token bucket but back it with Redis (swap only the store), or keep in-memory storage but change the algorithm (swap only the limiter).
+
+**Reload & persistence.** The default in-memory store is rebuilt per generation, so counters reset on reload (like the round-robin/health state). A store you want to survive reloads (e.g. a Redis client) should be constructed **once** and returned as the same instance from every `Server.Build` call, then assigned to `p.RateLimitStore` inside `Build`. Across multiple processes, an in-memory store counts per-process (effective limit N× the configured value); use a shared store for a fleet-wide limit.
+
+---
+
 ## Concurrency & tuning
 
 Go's `net/http` serves every request in its own goroutine, so Switchyard is concurrent by default. A few knobs and rules matter under load:

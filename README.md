@@ -21,11 +21,12 @@ Switchyard sits in front of your backend services and routes incoming traffic to
 - **Connection limits & overflow** — concurrent-in-flight caps nested at project / location / backend scopes, with configurable overflow behavior (`reject` / `queue` / `reroute`)
 - **Retry / reroute on failure** — retry a failed forward on another backend on a connection error, a configurable response-status list, or an unhealthy backend, with idempotency-aware safety, `none`/`constant`/`exponential` backoff (+ jitter), and field-merged global/per-location policy
 - **Health checks** — per-backend passive (eject after N failing statuses/connection errors in a time window) and active (probe a health endpoint on an interval) detection, with cooldown or probe-driven recovery, logged transitions, and field-merged global/per-backend config
+- **Rate limiting** — token-bucket throughput limiting on a composite key (client IP / header / method / path), global and per-location tiers, `429` with `Retry-After` and `RateLimit-*` headers; both the algorithm and the storage are SDK-swappable behind uniform interfaces (in-memory default, Redis/other drop-in)
 - **Timeouts & transport tuning** — upstream and client-facing timeouts plus keep-alive pool tuning, at project and per-backend scope
 - **Custom logging** — structured log lines with a user-defined format, parameterized fields, optional body capture, and multiple outputs (console / file / both); stacked global and per-location loggers
 - **Fail-fast validation** — all configuration errors (unknown variables, bad regexes, missing backends, bad IP ranges) are caught at startup
 - **Zero-downtime reload** — `switchyard reload [--force]` swaps the config in-process without restarting or dropping connections; an invalid new config is rejected and the running one keeps serving
-- **Usable two ways** — run the turnkey binary with just a JSON config (nginx-style), or import it as a Go **SDK** and override any of the **11 pluggable stages** (routing, backend selection, access control, response generation, logging, …) with your own code — no forking. See [docs/extending.md](docs/extending.md)
+- **Usable two ways** — run the turnkey binary with just a JSON config (nginx-style), or import it as a Go **SDK** and override any of the **13 pluggable stages** (routing, backend selection, access control, response generation, logging, rate limiting, …) with your own code — no forking. See [docs/extending.md](docs/extending.md)
 
 ---
 
@@ -140,5 +141,5 @@ Full reference documentation is in the [`docs/`](docs/) directory:
 | [docs/variables.md](docs/variables.md) | All available `$variable` placeholders |
 | [docs/set-headers.md](docs/set-headers.md) | Request and response header injection with variable substitution |
 | [docs/logging.md](docs/logging.md) | Log format, fields, outputs, body capture |
-| [docs/extending.md](docs/extending.md) | Using Switchyard as an SDK — override any of the 11 pluggable stages in your own Go code |
+| [docs/extending.md](docs/extending.md) | Using Switchyard as an SDK — override any of the 13 pluggable stages in your own Go code |
 | [docs/testing.md](docs/testing.md) | Test-suite layout, per-stage testing patterns, and the tests-required rule |

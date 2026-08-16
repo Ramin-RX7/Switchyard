@@ -57,8 +57,9 @@ type Location struct {
 	Headers         HeaderApplier
 	ResponseHeaders ResponseHeaderApplier
 
-	lim   *limiter    // concurrency cap for this location (nil = unlimited)
-	retry retryPolicy // resolved retry policy (global merged with this location's)
+	lim       *limiter       // concurrency cap for this location (nil = unlimited)
+	retry     retryPolicy    // resolved retry policy (global merged with this location's)
+	rateLimit *rateLimitRule // this location's rate-limit tier (nil = none)
 }
 
 // Path returns the location's configured path (the prefix or regex source), for
@@ -196,6 +197,13 @@ func compileLocations(cfgs []LocationConfig, byID map[string]*Backend, globalRet
 			return nil, fmt.Errorf("location %q: %w", c.Path, err)
 		}
 		loc.retry = rp
+
+		// This location's rate-limit tier (independent of the global tier).
+		rl, err := newRateLimitRule(c.Path, c.RateLimit)
+		if err != nil {
+			return nil, fmt.Errorf("location %q: %w", c.Path, err)
+		}
+		loc.rateLimit = rl
 
 		locs = append(locs, loc)
 	}

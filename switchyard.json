@@ -26,6 +26,51 @@
         "body": "{\"error\":\"capacity reached, retry shortly\",\"at\":\"$time_iso8601\"}"
     },
 
+    "retry": {
+        "attempts": 2,
+        "on_connection_error": true,
+        "on_status": [502, 503, 504],
+        "retry_non_idempotent": false,
+        "retry_same_backend": false,
+        "skip_unhealthy": true,
+        "max_body_bytes": 1048576,
+        "backoff": {
+            "strategy": "exponential",
+            "base_ms": 50,
+            "max_ms": 2000,
+            "jitter": true
+        },
+        "response": {
+            "status": 502,
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "body": "{\"error\":\"all upstreams failed\",\"path\":\"$uri\"}"
+        }
+    },
+
+    "health": {
+        "passive": {
+            "statuses": [500, 502, 503, 504],
+            "count": 5,
+            "window": 30,
+            "cooldown": 20
+        }
+    },
+
+    "rate_limit": {
+        "key": ["ip"],
+        "rate": 100,
+        "period": 60,
+        "burst": 50,
+        "headers": "always",
+        "status": 429,
+        "response_headers": {
+            "Content-Type": "application/json"
+        },
+        "body": "{\"error\":\"rate limit exceeded\",\"ip\":\"$remote_addr\"}"
+    },
+
     "backend_error": {
         "status": 502,
         "headers": {
@@ -64,7 +109,17 @@
             "id": "api1",
             "url": "http://127.0.0.1:9001",
             "max_connections": 100,
-            "methods": ["GET", "HEAD"]
+            "methods": ["GET", "HEAD"],
+            "health": {
+                "active": {
+                    "path": "/healthz",
+                    "interval": 10,
+                    "timeout": 2,
+                    "expected_status": 200,
+                    "unhealthy_threshold": 3,
+                    "healthy_threshold": 2
+                }
+            }
         },
         {
             "id": "api2",
@@ -73,6 +128,16 @@
             "methods": ["POST", "PUT", "DELETE"],
             "timeouts": {
                 "request": 10
+            },
+            "health": {
+                "passive": {
+                    "count": 3
+                },
+                "active": {
+                    "path": "/healthz",
+                    "interval": 5,
+                    "expected_status": 200
+                }
             }
         },
         {
@@ -97,7 +162,7 @@
         "outputs": [
             "console"
         ],
-        "format": "{receive_time} {method} {path} backend={backend_id} status={status} dur={request_duration}"
+        "format": "{receive_time} {method} {path} backend={backend_id} status={status} retries={retries} dur={request_duration}"
     },
 
     "locations": [
@@ -112,6 +177,18 @@
                 "10.0.0.0/8"
             ],
             "max_connections": 150,
+            "retry": {
+                "attempts": 3,
+                "on_status": [500, 502, 503, 504]
+            },
+            "rate_limit": {
+                "key": ["header:X-Api-Key", "path"],
+                "rate": 30,
+                "period": 60,
+                "burst": 10,
+                "methods": ["POST", "PUT", "DELETE"],
+                "headers": "on-reject"
+            },
             "set_headers": {
                 "X-Route": "api"
             },
